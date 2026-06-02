@@ -1,0 +1,38 @@
+# Local env
+.env
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project artifacts
+artifacts/*.jsonl
+artifacts/*.log
+artifacts/*.tmp
+!artifacts/*.sample.jsonl
+!artifacts/.gitkeep
+
+# Keep dataset local-only
+data/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Python tools cache
+.uv-cache/
+.uv-python/
+.ipython/
+.jupyter/
