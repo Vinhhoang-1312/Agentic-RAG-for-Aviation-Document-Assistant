@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+try:
+    from langchain_openai import ChatOpenAI
+except ModuleNotFoundError:
+    ChatOpenAI = None
 
 from .config import Settings
 from .io_utils import append_jsonl
@@ -34,6 +37,10 @@ class Phase3HoangGroundedQA:
     def _call_openai(self, question: str, context_block: str, doc_ids: List[str]) -> Dict[str, object]:
         if not self.settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is missing. Phase 3 OpenAI generation requires it.")
+        if ChatOpenAI is None:
+            raise ModuleNotFoundError(
+                "langchain_openai is not installed. Install requirements.txt dependencies to enable Phase 3 OpenAI generation."
+            )
 
         llm = ChatOpenAI(
             model=self.settings.openai_model,

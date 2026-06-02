@@ -27,7 +27,6 @@ class PipelineSmokeTests(unittest.TestCase):
                 data_path=temp_path / "missing.csv",
                 phase1_output_path=artifacts_dir / "phase1_hoang_intent_routing_output.jsonl",
                 phase2_output_path=artifacts_dir / "phase2_san_retrieval_output.jsonl",
-                phase2_sample_output_path=artifacts_dir / "phase2_san_retrieval_output.sample.jsonl",
                 phase3_output_path=artifacts_dir / "phase3_hoang_grounded_answer_output.jsonl",
                 openai_api_key=None,
                 langsmith_tracing="false",

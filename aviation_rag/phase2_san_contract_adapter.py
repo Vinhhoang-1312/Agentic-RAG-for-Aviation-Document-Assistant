@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from .config import Settings
-from .io_utils import append_jsonl, find_by_query_id, read_jsonl
+from .io_utils import append_jsonl, find_by_query_id
 from .schemas import InputAgentOutput, MiddleAgentOutput, RetrievedDoc
 
 MOCK_RETRIEVAL_LIBRARY: Dict[str, List[dict[str, object]]] = {
@@ -89,36 +89,6 @@ class Phase2SanContractAdapter:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def _pick_sample_row(self, input_row: InputAgentOutput, sample_path: Path) -> MiddleAgentOutput | None:
-        if not sample_path.exists():
-            return None
-        rows = read_jsonl(sample_path)
-        if not rows:
-            return None
-
-        matching_row = None
-        for row in rows:
-            if row.get("predicted_intent") == input_row.intent:
-                matching_row = row
-                break
-        if matching_row is None:
-            matching_row = rows[0]
-
-        topk_docs = [
-            RetrievedDoc.model_validate(doc)
-            for doc in matching_row.get("topk_docs", [])
-        ]
-        return MiddleAgentOutput(
-            query_id=input_row.query_id,
-            predicted_intent=input_row.intent,
-            topk_docs=topk_docs,
-            retrieval_diagnostics={
-                "adapter_mode": "sample_artifact",
-                "contract_owner": "Quang San",
-                "strategy_requested": input_row.retrieval_plan.strategy,
-            },
-        )
-
     def _build_mock_output(self, input_row: InputAgentOutput) -> MiddleAgentOutput:
         base_docs = MOCK_RETRIEVAL_LIBRARY.get(input_row.intent, MOCK_RETRIEVAL_LIBRARY["Incident_Report"])
         topk_docs: List[RetrievedDoc] = []
@@ -149,7 +119,6 @@ class Phase2SanContractAdapter:
         self,
         input_row: InputAgentOutput,
         output_path: Path | None = None,
-        sample_path: Path | None = None,
     ) -> MiddleAgentOutput:
         target = output_path or self.settings.phase2_output_path
         if target.exists():
@@ -158,11 +127,6 @@ class Phase2SanContractAdapter:
                 return MiddleAgentOutput.model_validate(row)
             except Exception:
                 pass
-
-        sample_target = sample_path or self.settings.phase2_sample_output_path
-        sample_output = self._pick_sample_row(input_row, sample_target)
-        if sample_output is not None:
-            return sample_output
 
         return self._build_mock_output(input_row)
 

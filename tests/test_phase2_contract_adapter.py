@@ -16,7 +16,6 @@ class Phase2ContractAdapterTests(unittest.TestCase):
             settings = Settings(
                 data_path=temp_path / "missing.csv",
                 phase2_output_path=temp_path / "phase2_san_retrieval_output.jsonl",
-                phase2_sample_output_path=temp_path / "missing.sample.jsonl",
                 input_intent_mode="heuristic",
                 langsmith_tracing="false",
             )

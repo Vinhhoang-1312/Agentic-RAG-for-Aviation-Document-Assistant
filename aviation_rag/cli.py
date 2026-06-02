@@ -16,12 +16,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query-id", type=str, default=None, help="Existing query_id in phase 1 artifact.")
     parser.add_argument("--phase1-artifact", type=str, default=None, help="Path to phase1_hoang_intent_routing_output.jsonl")
     parser.add_argument("--phase2-artifact", type=str, default=None, help="Path to phase2_san_retrieval_output.jsonl")
-    parser.add_argument(
-        "--phase2-sample-artifact",
-        type=str,
-        default=None,
-        help="Optional sample/mock phase 2 artifact used when San output is not ready.",
-    )
     parser.add_argument("--phase3-artifact", type=str, default=None, help="Path to phase3_hoang_grounded_answer_output.jsonl")
     parser.add_argument("--top-k", type=int, default=None, help="Override routing top-k.")
     parser.add_argument(
@@ -75,8 +69,6 @@ def main() -> None:
         state["phase1_artifact_path"] = str(Path(args.phase1_artifact))
     if args.phase2_artifact:
         state["phase2_artifact_path"] = str(Path(args.phase2_artifact))
-    if args.phase2_sample_artifact:
-        state["phase2_sample_artifact_path"] = str(Path(args.phase2_sample_artifact))
     if args.phase3_artifact:
         state["phase3_artifact_path"] = str(Path(args.phase3_artifact))
 

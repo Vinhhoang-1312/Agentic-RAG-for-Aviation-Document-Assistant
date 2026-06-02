@@ -40,7 +40,7 @@ class ContractTests(unittest.TestCase):
                     metadata={"source": "phase2_contract"},
                 )
             ],
-            retrieval_diagnostics={"adapter_mode": "sample_artifact"},
+            retrieval_diagnostics={"adapter_mode": "generated_mock"},
         )
         self.assertEqual(len(output.topk_docs), 1)
 

@@ -29,20 +29,10 @@ class Settings:
         / "artifacts"
         / "phase2_san_retrieval_output.jsonl"
     )
-    phase2_sample_output_path: Path = (
-        Path(__file__).resolve().parents[1]
-        / "artifacts"
-        / "phase2_san_retrieval_output.sample.jsonl"
-    )
     phase3_output_path: Path = (
         Path(__file__).resolve().parents[1]
         / "artifacts"
         / "phase3_hoang_grounded_answer_output.jsonl"
-    )
-    sample_queries_path: Path = (
-        Path(__file__).resolve().parents[1]
-        / "artifacts"
-        / "phase0_user_query_samples.sample.jsonl"
     )
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
@@ -53,6 +43,9 @@ class Settings:
     default_strategy: str = os.getenv("RAG_RETRIEVAL_STRATEGY", "hybrid")
     intent_conf_threshold: float = float(os.getenv("INTENT_CONF_THRESHOLD", "0.60"))
     input_intent_mode: str = os.getenv("INPUT_INTENT_MODE", "heuristic")
+    retrieval_max_docs: int = int(os.getenv("RETRIEVAL_MAX_DOCS", "15000"))
+    retrieval_tfidf_max_features: int = int(os.getenv("RETRIEVAL_TFIDF_MAX_FEATURES", "12000"))
+    retrieval_svd_components: int = int(os.getenv("RETRIEVAL_SVD_COMPONENTS", "128"))
 
 
 def ensure_artifact_dirs(settings: Settings) -> None:

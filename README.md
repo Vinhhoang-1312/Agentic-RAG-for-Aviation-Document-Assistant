@@ -1,12 +1,14 @@
 # Vinh Hoang Phase-Based Aviation Workflow
 
-This repository contains **only Vinh Hoang's ownership** in the full aviation RAG project:
+This repository contains Vinh Hoang's phase ownership plus a local integrated demo path for the full aviation RAG project:
 
 - **Phase 1 - Intent-Aware Routing**
 - **Phase 3 - Grounded Output**
 
-`Quang San` will implement **Phase 2 Retrieval** on his own machine after pulling this repo.  
-To keep the full flow demo runnable, this repo includes a **Phase 2 contract adapter + sample/mock artifact**, but it does **not** own retrieval logic.
+`Quang San` will still be able to plug in his own Phase 2 artifact.  
+This repo now supports both:
+- a **real local FAISS retrieval path** over the ASRS dataset for integrated demos
+- a **Phase 2 contract adapter + generated mock fallback** when retrieval data is unavailable
 
 ## What This Repo Owns
 
@@ -24,9 +26,9 @@ To keep the full flow demo runnable, this repo includes a **Phase 2 contract ada
 - LangGraph orchestration around phases 1 -> 2 contract -> 3
 
 ### Quang San owns
-- Phase 2 retrieval engine
-- Retrieval over real corpus / FAISS / BM25 / semantic search
-- Producing the real Phase 2 artifact that matches the shared contract
+- The shared Phase 2 output contract
+- Partner-side retrieval experimentation and alternative retrieval implementations
+- Producing a real Phase 2 artifact that matches the shared contract
 
 ### Shared
 - `LangGraph` workflow structure
@@ -49,8 +51,9 @@ To keep the full flow demo runnable, this repo includes a **Phase 2 contract ada
 1. User sends a query.
 2. Hoang Phase 1 runs normally.
 3. If San's Phase 2 artifact exists, LangGraph reads it.
-4. If San's artifact is missing, the Phase 2 contract adapter uses sample/mock data.
-5. Hoang Phase 3 still runs end-to-end for local demo and testing.
+4. If San's artifact is missing, the local Phase 2 runtime first attempts FAISS retrieval over the local dataset.
+5. If retrieval data is unavailable, the Phase 2 contract adapter uses generated mock data.
+6. Hoang Phase 3 still runs end-to-end for local demo and testing.
 
 ## Folder Map
 
@@ -61,9 +64,9 @@ To keep the full flow demo runnable, this repo includes a **Phase 2 contract ada
 - `scripts/`
   Utility scripts for Phase 1 generation, Phase 2 contract validation, and Phase 3 evaluation.
 - `tests/`
-  Contract, smoke, and runtime tests.
+  Contract, smoke, and runtime tests. Keep this folder because it protects the API, graph, retrieval, and schema behavior during refactors.
 - `artifacts/`
-  Sample query file and sample Phase 2 contract artifact.
+  Runtime output artifacts and retained placeholders such as `.gitkeep`.
 - `data/`
   Local-only research data. Useful for Phase 1 research mode, not required for app runtime.
 
@@ -102,9 +105,6 @@ File:
 
 Owned by:
 - Quang San
-
-Sample contract file in this repo:
-- `artifacts/phase2_san_retrieval_output.sample.jsonl`
 
 Schema:
 - `query_id`
@@ -184,7 +184,7 @@ Cell map:
 - Cell 2: section header for loading phase 1 artifact
 - Cell 3: load Phase 1 artifact and inspect first row
 - Cell 4: section header for Phase 2 contract consumption
-- Cell 5: resolve San contract via real artifact or sample/mock adapter
+- Cell 5: resolve San contract via real artifact, local FAISS retrieval, or generated mock fallback
 - Cell 6: section header for grounded QA generation
 - Cell 7: generate final grounded outputs
 - Cell 8: section header for export
@@ -201,7 +201,7 @@ python -m aviation_rag.cli --query "engine failure after takeoff" --write-phase1
 
 What it does:
 - Runs Phase 1
-- Resolves Phase 2 via San artifact or mock/sample adapter
+- Resolves Phase 2 via San artifact, local FAISS retrieval, or generated mock fallback
 - Runs Phase 3
 - Writes phase-based artifacts
 
@@ -212,11 +212,30 @@ Command:
 python -m aviation_rag.chat_cli
 ```
 
+### Streamlit demo UI
+Command:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Recommended Windows launcher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_demo.ps1
+```
+
 ### HTTP API
 Command:
 
 ```bash
 uvicorn aviation_rag.api:app --host 0.0.0.0 --port 8000
+```
+
+Quick local health check after starting the demo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/check_demo.ps1
 ```
 
 Health:
@@ -243,7 +262,8 @@ curl -X POST http://localhost:8000/v1/chat \
 ### App runtime mode
 - Works without requiring dataset training at request time
 - Uses heuristic fallback for intent classification when needed
-- Works without San retrieval engine by using Phase 2 contract adapter
+- Uses local FAISS retrieval over the ASRS dataset when local data is available
+- Still works without San retrieval engine by falling back to the Phase 2 contract adapter
 
 Key environment variable:
 
@@ -255,6 +275,14 @@ Modes:
 - `heuristic`: default app mode, query-only and no dataset dependency at runtime
 - `auto`: use ML when possible, else heuristic
 - `ml`: force dataset-backed ML path
+
+Retrieval environment variables:
+
+```bash
+set RETRIEVAL_MAX_DOCS=15000
+set RETRIEVAL_TFIDF_MAX_FEATURES=12000
+set RETRIEVAL_SVD_COMPONENTS=128
+```
 
 ## Function Catalog
 
@@ -329,14 +357,16 @@ Modes:
   Purpose: load one Phase 1 row by id.
 
 ### `aviation_rag/phase2_san_contract_adapter.py`
-- `Phase2SanContractAdapter._pick_sample_row(input_row, sample_path)`
-  Purpose: load a same-intent sample row when San artifact is not ready.
 - `Phase2SanContractAdapter._build_mock_output(input_row)`
   Purpose: synthesize a local demo Phase 2 artifact without owning retrieval logic.
-- `Phase2SanContractAdapter.resolve_output(input_row, output_path, sample_path)`
-  Purpose: prefer San artifact, else sample artifact, else generated mock.
+- `Phase2SanContractAdapter.resolve_output(input_row, output_path)`
+  Purpose: prefer San artifact, else generated mock.
 - `Phase2SanContractAdapter.write_output(output, path)`
   Purpose: materialize resolved Phase 2 output for debugging/demo.
+
+### `aviation_rag/phase2_san_faiss_retrieval.py`
+- `Phase2SanFaissRetrieval.retrieve(input_row)`
+  Purpose: run local FAISS retrieval over the ASRS dataset with TF-IDF/SVD semantic vectors, BM25 lexical scoring, and intent-aware ranking.
 
 ### `aviation_rag/phase3_hoang_grounded_qa.py`
 - `_tokenize(text)`
@@ -453,9 +483,10 @@ If a future agent joins this project, read these files first and only then expan
 1. `README.md`
 2. `aviation_rag/graph.py`
 3. `aviation_rag/phase1_hoang_intent_routing.py`
-4. `aviation_rag/phase2_san_contract_adapter.py`
-5. `aviation_rag/phase3_hoang_grounded_qa.py`
-6. `aviation_rag/schemas.py`
+4. `aviation_rag/phase2_san_faiss_retrieval.py`
+5. `aviation_rag/phase2_san_contract_adapter.py`
+6. `aviation_rag/phase3_hoang_grounded_qa.py`
+7. `aviation_rag/schemas.py`
 
 That is enough to understand:
 - ownership

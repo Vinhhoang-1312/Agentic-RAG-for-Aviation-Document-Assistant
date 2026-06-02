@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .config import Settings, configure_tracing_env
 from .io_utils import find_by_query_id
+from .phase2_san_faiss_retrieval import Phase2SanFaissRetrieval
 from .phase1_hoang_intent_routing import Phase1HoangIntentRouting
 from .phase2_san_contract_adapter import Phase2SanContractAdapter
 from .phase3_hoang_grounded_qa import Phase3HoangGroundedQA
@@ -26,7 +27,6 @@ class RagState(TypedDict, total=False):
     retrieval_plan_override: dict[str, Any]
     phase1_artifact_path: str
     phase2_artifact_path: str
-    phase2_sample_artifact_path: str
     phase3_artifact_path: str
     topk_docs: list[dict[str, Any]]
     retrieval_diagnostics: dict[str, Any]
@@ -43,6 +43,7 @@ class RagState(TypedDict, total=False):
 def build_graph(settings: Settings):
     configure_tracing_env(settings)
     phase1_agent = Phase1HoangIntentRouting(settings)
+    phase2_retrieval = Phase2SanFaissRetrieval(settings)
     phase2_adapter = Phase2SanContractAdapter(settings)
     phase3_agent = Phase3HoangGroundedQA(settings)
 
@@ -92,14 +93,12 @@ def build_graph(settings: Settings):
             retrieval_plan=state["retrieval_plan"],
         )
         phase2_path = Path(state.get("phase2_artifact_path", str(settings.phase2_output_path)))
-        phase2_sample_path = Path(
-            state.get("phase2_sample_artifact_path", str(settings.phase2_sample_output_path))
-        )
         phase2_output = phase2_adapter.resolve_output(
             phase1_output,
             output_path=phase2_path,
-            sample_path=phase2_sample_path,
         )
+        if phase2_retrieval.available and phase2_output.retrieval_diagnostics.get("adapter_mode") == "generated_mock":
+            phase2_output = phase2_retrieval.retrieve(phase1_output)
         if bool(state.get("write_phase2_artifact", True)):
             phase2_adapter.write_output(phase2_output, phase2_path)
         return {
