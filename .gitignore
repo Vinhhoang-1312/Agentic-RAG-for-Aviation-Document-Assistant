@@ -20,6 +20,8 @@ __pycache__/
 artifacts/*.jsonl
 artifacts/*.log
 artifacts/*.tmp
+artifacts/*.json
+artifacts/phase2_index*/
 !artifacts/.gitkeep
 
 # Keep dataset local-only

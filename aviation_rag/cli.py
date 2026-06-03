@@ -10,6 +10,9 @@ from .graph import build_graph
 from .runtime import build_run_state
 
 
+STRATEGIES = ["bm25", "semantic", "hybrid", "metadata_first", "hybrid_rrf"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Hoang's phase-based LangGraph workflow.")
     parser.add_argument("--query", type=str, default=None, help="Raw user query.")
@@ -22,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--strategy",
         type=str,
         default=None,
-        choices=["bm25", "semantic", "hybrid", "metadata_first"],
+        choices=STRATEGIES,
         help="Manual override for retrieval strategy.",
     )
     parser.add_argument(

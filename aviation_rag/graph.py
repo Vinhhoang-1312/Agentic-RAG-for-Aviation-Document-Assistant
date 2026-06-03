@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from .config import Settings, configure_tracing_env
 from .io_utils import find_by_query_id
-from .phase2_san_faiss_retrieval import Phase2SanFaissRetrieval
 from .phase1_hoang_intent_routing import Phase1HoangIntentRouting
 from .phase2_san_contract_adapter import Phase2SanContractAdapter
+from .phase2_san_faiss_retrieval import Phase2SanFaissRetrieval
 from .phase3_hoang_grounded_qa import Phase3HoangGroundedQA
 from .schemas import InputAgentOutput, MiddleAgentOutput
 
@@ -93,12 +93,29 @@ def build_graph(settings: Settings):
             retrieval_plan=state["retrieval_plan"],
         )
         phase2_path = Path(state.get("phase2_artifact_path", str(settings.phase2_output_path)))
-        phase2_output = phase2_adapter.resolve_output(
-            phase1_output,
-            output_path=phase2_path,
-        )
-        if phase2_retrieval.available and phase2_output.retrieval_diagnostics.get("adapter_mode") == "generated_mock":
-            phase2_output = phase2_retrieval.retrieve(phase1_output)
+        phase2_output = phase2_adapter.resolve_output(phase1_output, output_path=phase2_path)
+
+        if phase2_output.retrieval_diagnostics.get("adapter_mode") == "generated_mock":
+            if phase2_retrieval.available:
+                phase2_output = phase2_retrieval.retrieve(phase1_output)
+            else:
+                phase2_output.retrieval_diagnostics.update(
+                    {
+                        "retrieval_backend": "generated_mock",
+                        "embedding_model": settings.phase2_embedding_model,
+                        "embedding_backend": "unavailable",
+                        "embedding_dim": 0,
+                        "faiss_index_type": "IndexFlatIP",
+                        "normalization": "L2",
+                        "chunk_count": 0,
+                        "bm25_enabled": False,
+                        "metadata_filter_applied": False,
+                        "fusion_method": "none",
+                        "latency_ms": 0.0,
+                        "fallback_reason": phase2_retrieval.build_error,
+                    }
+                )
+
         if bool(state.get("write_phase2_artifact", True)):
             phase2_adapter.write_output(phase2_output, phase2_path)
         return {

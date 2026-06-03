@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from threading import Lock
-from typing import TYPE_CHECKING
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -13,10 +12,13 @@ if TYPE_CHECKING:
     from .config import Settings
 
 
+RetrievalStrategyInput = Literal["bm25", "semantic", "hybrid", "metadata_first", "hybrid_rrf"]
+
+
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1)
     top_k: int | None = Field(default=None, ge=1, le=100)
-    strategy: Literal["bm25", "semantic", "hybrid", "metadata_first"] | None = None
+    strategy: RetrievalStrategyInput | None = None
     allow_local_fallback: bool = True
     write_phase1_artifact: bool = True
 
@@ -61,8 +63,8 @@ def _ensure_runtime(app: FastAPI) -> tuple[Any, Any]:
 def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="Hoang Intent-Aware Aviation Workflow API",
-        version="1.0.0",
-        description="Hoang-owned phase 1 + phase 3 workflow with a San phase 2 contract adapter.",
+        version="1.1.0",
+        description="Phase 1 intent routing, complete Phase 2 dense/BM25 retrieval, and Phase 3 grounded QA.",
     )
 
     if settings is not None:

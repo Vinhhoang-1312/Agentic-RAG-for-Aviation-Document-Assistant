@@ -15,7 +15,7 @@ IntentLabel = Literal[
 
 IntentSource = Literal["ml", "heuristic"]
 
-RetrievalStrategy = Literal["bm25", "semantic", "hybrid", "metadata_first"]
+RetrievalStrategy = Literal["bm25", "semantic", "hybrid", "metadata_first", "hybrid_rrf"]
 
 
 class RetrievalPlan(BaseModel):
