@@ -13,12 +13,14 @@ def build_run_state(
     top_k: int | None = None,
     strategy: str | None = None,
     allow_local_fallback: bool = True,
+    force_local_answer: bool = False,
     write_phase1_artifact: bool = False,
     write_phase2_artifact: bool = True,
     write_phase3_artifact: bool = True,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
         "allow_local_fallback": bool(allow_local_fallback),
+        "force_local_answer": bool(force_local_answer),
         "write_phase1_artifact": bool(write_phase1_artifact),
         "write_phase2_artifact": bool(write_phase2_artifact),
         "write_phase3_artifact": bool(write_phase3_artifact),

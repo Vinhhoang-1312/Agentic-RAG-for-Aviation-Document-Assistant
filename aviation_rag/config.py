@@ -4,7 +4,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover
+    def load_dotenv(*_args, **_kwargs) -> bool:
+        return False
 
 load_dotenv()
 
@@ -28,6 +32,7 @@ class Settings:
     phase3_output_path: Path = _DEFAULT_ARTIFACTS_DIR / "phase3_hoang_grounded_answer_output.jsonl"
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    openai_timeout_seconds: int = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "20"))
     langsmith_tracing: str = os.getenv("LANGSMITH_TRACING", "false")
     langsmith_api_key: str | None = os.getenv("LANGSMITH_API_KEY")
     langsmith_project: str = os.getenv("LANGSMITH_PROJECT", "aviation-rag-team")

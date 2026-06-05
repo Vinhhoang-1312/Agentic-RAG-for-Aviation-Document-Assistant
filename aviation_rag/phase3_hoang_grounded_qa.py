@@ -5,7 +5,11 @@ import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from langchain_core.messages import HumanMessage, SystemMessage
+try:
+    from langchain_core.messages import HumanMessage, SystemMessage
+except ModuleNotFoundError:
+    HumanMessage = None
+    SystemMessage = None
 try:
     from langchain_openai import ChatOpenAI
 except ModuleNotFoundError:
@@ -20,6 +24,13 @@ TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 def _tokenize(text: str) -> set[str]:
     return set(TOKEN_RE.findall((text or "").lower()))
+
+
+def _clean_snippet(text: str, max_chars: int = 280) -> str:
+    snippet = re.sub(r"\s+", " ", text or "").strip()
+    if len(snippet) > max_chars:
+        snippet = snippet[: max_chars - 3].rstrip() + "..."
+    return snippet
 
 
 class Phase3HoangGroundedQA:
@@ -41,11 +52,17 @@ class Phase3HoangGroundedQA:
             raise ModuleNotFoundError(
                 "langchain_openai is not installed. Install requirements.txt dependencies to enable Phase 3 OpenAI generation."
             )
+        if HumanMessage is None or SystemMessage is None:
+            raise ModuleNotFoundError(
+                "langchain_core is not installed. Install requirements.txt dependencies to enable Phase 3 OpenAI generation."
+            )
 
         llm = ChatOpenAI(
             model=self.settings.openai_model,
             api_key=self.settings.openai_api_key,
             temperature=0.1,
+            timeout=self.settings.openai_timeout_seconds,
+            max_retries=1,
         )
         system = SystemMessage(
             content=(
@@ -73,11 +90,26 @@ class Phase3HoangGroundedQA:
             }
 
     def _fallback_answer(self, question: str, middle_output: MiddleAgentOutput) -> Dict[str, object]:
-        snippets = [doc.chunk_text[:240] for doc in middle_output.topk_docs[:3]]
-        answer = (
-            "OpenAI key or network is unavailable, so this is Hoang phase 3 grounded fallback output. "
-            f"Most relevant evidence for '{question}': {' '.join(snippets)}"
-        )
+        evidence_lines = []
+        for index, doc in enumerate(middle_output.topk_docs[:3], start=1):
+            evidence_lines.append(f"{index}. Document {doc.doc_id}: {_clean_snippet(doc.chunk_text)}")
+        if evidence_lines:
+            answer = "\n".join(
+                [
+                    "Local grounded fallback: OpenAI is not configured or Fast local mode is active.",
+                    f"Query: {question}",
+                    "",
+                    "Evidence highlights:",
+                    *evidence_lines,
+                    "",
+                    "Review the Evidence tab before treating this as a supported research answer.",
+                ]
+            )
+        else:
+            answer = (
+                "Local grounded fallback could not find retrieved evidence for this query. "
+                "Try a more specific aviation incident, hazard, maintenance item, or airport condition."
+            )
         return {
             "answer": answer,
             "citation_doc_ids": [doc.doc_id for doc in middle_output.topk_docs[:3]],
@@ -95,9 +127,17 @@ class Phase3HoangGroundedQA:
             "hallucination_risk": max(0.0, min(1.0, 1.0 - overlap_ratio)),
         }
 
-    def generate(self, question: str, middle_output: MiddleAgentOutput, allow_fallback: bool = True) -> FinalOutput:
+    def generate(
+        self,
+        question: str,
+        middle_output: MiddleAgentOutput,
+        allow_fallback: bool = True,
+        force_local: bool = False,
+    ) -> FinalOutput:
         context_block, doc_ids = self._build_context(middle_output)
-        if self.settings.openai_api_key:
+        if force_local:
+            payload = self._fallback_answer(question, middle_output)
+        elif self.settings.openai_api_key:
             try:
                 payload = self._call_openai(question, context_block, doc_ids)
             except Exception:

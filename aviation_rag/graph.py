@@ -35,6 +35,7 @@ class RagState(TypedDict, total=False):
     hallucination_risk: float
     grounding_report: dict[str, Any]
     allow_local_fallback: bool
+    force_local_answer: bool
     write_phase1_artifact: bool
     write_phase2_artifact: bool
     write_phase3_artifact: bool
@@ -135,6 +136,7 @@ def build_graph(settings: Settings):
             question=state["query_raw"],
             middle_output=phase2_output,
             allow_fallback=bool(state.get("allow_local_fallback", True)),
+            force_local=bool(state.get("force_local_answer", False)),
         )
         phase3_path = Path(state.get("phase3_artifact_path", str(settings.phase3_output_path)))
         if bool(state.get("write_phase3_artifact", True)):

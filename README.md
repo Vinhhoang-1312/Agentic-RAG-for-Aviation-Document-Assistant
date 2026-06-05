@@ -5,6 +5,34 @@ This repository contains Vinh Hoang's phase ownership plus a local integrated de
 - **Phase 1 - Intent-Aware Routing**
 - **Phase 3 - Grounded Output**
 
+## Quick Start
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the local demo on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_demo.ps1
+```
+
+Check that both services are alive:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/check_demo.ps1
+```
+
+Default local URLs:
+- Streamlit UI: `http://127.0.0.1:8501`
+- FastAPI health: `http://127.0.0.1:8000/health`
+
+Important runtime note:
+- The first API or UI query can be slower because the LangGraph runtime and local retrieval index are initialized lazily on first real request.
+- If `LANGSMITH_TRACING=true` and the machine cannot reach LangSmith, the app still works locally but may log tracing connection errors.
+
 `Quang San` will still be able to plug in his own Phase 2 artifact.  
 This repo now supports both:
 - a **real local FAISS retrieval path** over the ASRS dataset for integrated demos
@@ -264,6 +292,7 @@ curl -X POST http://localhost:8000/v1/chat \
 - Uses heuristic fallback for intent classification when needed
 - Uses local FAISS retrieval over the ASRS dataset when local data is available
 - Still works without San retrieval engine by falling back to the Phase 2 contract adapter
+- Uses lazy FastAPI runtime initialization so `/health` responds quickly and the heavier graph setup happens only on first real chat request
 
 Key environment variable:
 
@@ -432,6 +461,14 @@ set RETRIEVAL_SVD_COMPONENTS=128
   Purpose: validate San's Phase 2 artifact against shared schema.
 - `scripts/evaluate_phase3_hoang_grounding.py`
   Purpose: summarize grounding quality from Phase 3 artifact.
+- `scripts/start_demo.ps1`
+  Purpose: open local API and Streamlit demo windows for Windows users.
+- `scripts/start_api.ps1`
+  Purpose: run only the FastAPI server.
+- `scripts/start_streamlit.ps1`
+  Purpose: run only the Streamlit demo UI.
+- `scripts/check_demo.ps1`
+  Purpose: verify local API and UI health endpoints quickly.
 
 ## San Handoff Contract
 
@@ -500,3 +537,7 @@ That is enough to understand:
 ```bash
 python -m unittest discover -s tests -q
 ```
+
+Why keep `tests/`:
+- This folder protects the contracts and runtime behavior during refactors.
+- It is the fastest way to catch breakage in API startup, LangGraph flow, retrieval fallback, and schema compatibility.
