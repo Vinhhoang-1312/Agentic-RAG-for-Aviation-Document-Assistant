@@ -54,6 +54,25 @@ class Settings:
     intent_conf_threshold: float = float(os.getenv("INTENT_CONF_THRESHOLD", "0.60"))
     input_intent_mode: str = os.getenv("INPUT_INTENT_MODE", "heuristic")
 
+    # ── Retrieval settings (Quan San — Phase 2) ──────────────────────
+    index_dir: Path = Path(__file__).resolve().parents[1] / "data" / "index_store"
+    embedding_model_name: str = "all-MiniLM-L6-v2"
+    embedding_dimension: int = 384
+    embedding_batch_size: int = 256
+    max_chunk_length: int = 512
+    chunk_overlap: int = 50
+    min_text_length: int = 20
+    dev_sample_size: int = 5000
+    text_columns: tuple = ("report1_narrative", "report2_narrative", "report_summary")
+    metadata_columns: tuple = (
+        "event_id", "event_datetime", "location_airport", "location_state",
+        "aircraft1_model", "aircraft1_operator", "aircraft1_flight_phase",
+        "aircraft1_far_part", "event_anomaly", "primary_problem",
+        "contributing_factors", "event_outcome",
+    )
+    bm25_weight: float = float(os.getenv("BM25_WEIGHT", "0.3"))
+    semantic_weight: float = float(os.getenv("SEMANTIC_WEIGHT", "0.7"))
+
 
 def ensure_artifact_dirs(settings: Settings) -> None:
     settings.artifacts_dir.mkdir(parents=True, exist_ok=True)
