@@ -7,8 +7,8 @@ def map_row_to_intent(row: pd.Series) -> str:
     """Map aviation dataset rows into Hoang's phase-1 intent taxonomy.
 
     Note: the local ASRS-style dataset is suitable for three practical labels:
-    Incident_Report, Technical_Procedure, and Metadata_Query. Factoid is mainly
-    handled at runtime through query heuristics because it is sparse in the data.
+    Incident_Report, Technical_Procedure, and Metadata_Query. Factoid examples
+    are added as seed training rows before the TF-IDF + Logistic Regression fit.
     """
 
     primary_problem = str(row.get("primary_problem", "")).lower()
@@ -38,7 +38,17 @@ def map_row_to_intent(row: pd.Series) -> str:
         return "Technical_Procedure"
     if any(
         token in technical_blob
-        for token in ["procedure", "checklist", "manual", "component", "maintenance", "failed"]
+        for token in [
+            "procedure",
+            "checklist",
+            "manual",
+            "maintenance",
+            "mel",
+            "logbook",
+            "troubleshoot",
+            "deferral",
+            "deferred",
+        ]
     ):
         return "Technical_Procedure"
 

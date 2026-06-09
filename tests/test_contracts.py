@@ -36,13 +36,17 @@ class ContractTests(unittest.TestCase):
                     doc_id="doc_1001",
                     chunk_id="doc_1001#0",
                     chunk_text="sample retrieval chunk",
-                    scores={"bm25": 0.2, "semantic": 0.7, "final": 0.5},
+                    scores={"bm25": 0.2, "semantic": 0.7, "metadata": 0.1, "final": 0.5},
                     metadata={"source": "phase2_contract"},
                 )
             ],
-            retrieval_diagnostics={"adapter_mode": "sample_artifact"},
+            retrieval_diagnostics={"adapter_mode": "faiss_retrieval", "fusion_method": "weighted_linear_fusion"},
         )
         self.assertEqual(len(output.topk_docs), 1)
+
+    def test_phase2_hybrid_rrf_strategy_is_valid_contract(self):
+        plan = RetrievalPlan(strategy="hybrid_rrf", fallback_strategy="hybrid", top_k=5)
+        self.assertEqual(plan.strategy, "hybrid_rrf")
 
     def test_phase3_contract(self):
         output = FinalOutput(

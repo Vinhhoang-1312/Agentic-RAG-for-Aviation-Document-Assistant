@@ -156,6 +156,13 @@ python scripts/build_phase2_san_index.py --force
 > **Note:** The index is built once and saved to `data/index_store/`. Subsequent runs load from disk (~1-2s).
 
 ### 3. Run the pipeline
+Quick local health check after starting the demo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/check_demo.ps1
+```
+
+Health:
 
 ```bash
 # Streamlit Demo UI (recommended for demo)
@@ -198,6 +205,38 @@ File: `artifacts/phase1_hoang_intent_routing_output.jsonl`
 | `retrieval_plan` | object | `{strategy, fallback_strategy, top_k, filters, routing_reason}` |
 
 ### Phase 2 → Phase 3: `MiddleAgentOutput`
+### Research mode
+- Trains `TF-IDF + Logistic Regression` on query-only corpus (seed + training JSONL + augmentation)
+- Gold-set (`data/phase1_intent_gold_labels.jsonl`) is evaluation-only
+- Useful for notebook experiments
+
+### App runtime mode
+- Default intent routing: `auto` (ML + heuristic fallback)
+- Uses saved model in `artifacts/phase1_intent_model/` (auto-retrains if stale ASRS-narrative model detected)
+- Uses local FAISS retrieval over the ASRS dataset when local data is available
+- Still works without San retrieval engine by falling back to the Phase 2 contract adapter
+- Uses lazy FastAPI runtime initialization so `/health` responds quickly and the heavier graph setup happens only on first real chat request
+
+Key environment variables:
+
+```bash
+set INPUT_INTENT_MODE=auto
+set PHASE1_ML_CONFIDENCE_THRESHOLD=0.55
+set PHASE1_RETRAIN=false
+```
+
+Modes:
+- `auto`: recommended; ML when confident/agrees with heuristic, else heuristic
+- `ml`: always use TF-IDF + Logistic Regression
+- `heuristic`: rule-based routing only (no ML at inference)
+
+Retrieval environment variables:
+
+```bash
+set RETRIEVAL_MAX_DOCS=15000
+set RETRIEVAL_TFIDF_MAX_FEATURES=12000
+set RETRIEVAL_SVD_COMPONENTS=128
+```
 
 File: `artifacts/phase2_san_retrieval_output.jsonl`
 
@@ -209,6 +248,91 @@ File: `artifacts/phase2_san_retrieval_output.jsonl`
 | `retrieval_diagnostics` | dict | Strategy used, timing, index size |
 
 Each `topk_docs` item (`RetrievedDoc`):
+### `aviation_rag/schemas.py`
+- `RetrievalPlan`
+  Purpose: carry Hoang's routing decision toward Phase 2.
+- `InputAgentOutput`
+  Purpose: contract from Hoang Phase 1 to San Phase 2.
+- `RetrievedDoc`
+  Purpose: schema for a retrieved chunk row.
+- `MiddleAgentOutput`
+  Purpose: contract from San Phase 2 to Hoang Phase 3.
+- `Citation`
+  Purpose: citation entry attached to final answer.
+- `FinalOutput`
+  Purpose: final grounded answer artifact.
+
+### `aviation_rag/io_utils.py`
+- `append_jsonl(path, row)`
+  Purpose: append one row to JSONL file.
+- `write_jsonl(path, rows)`
+  Purpose: overwrite a JSONL file with rows.
+- `read_jsonl(path)`
+  Purpose: read entire JSONL file into memory.
+- `find_by_query_id(path, query_id)`
+  Purpose: locate one row by `query_id`.
+
+### `aviation_rag/intent_rules.py`
+- `map_row_to_intent(row)`
+  Purpose: map dataset rows to Hoang Phase 1 training labels.
+  Inputs: local dataframe row.
+  Outputs: `Incident_Report`, `Technical_Procedure`, or `Metadata_Query`.
+
+### `aviation_rag/phase1_hoang_intent_routing.py`
+- `normalize_text(text)`
+  Purpose: normalize aviation query text and expand jargon.
+- `tokenize(text)`
+  Purpose: token extraction helper.
+- `heuristic_intent(normalized_query)`
+  Purpose: legacy keyword helper retained for compatibility; not the main runtime classifier.
+- `IntentModel.predict(text)`
+  Purpose: return predicted label and confidence from TF-IDF + Logistic Regression.
+- `Phase1HoangIntentRouting._train_intent_model(data_path)`
+  Purpose: train the required TF-IDF + Logistic Regression classifier from seed examples plus local ASRS weak labels.
+- `Phase1HoangIntentRouting.predict_intent(query_raw)`
+  Purpose: predict final intent, confidence, and source from the sklearn classifier.
+- `Phase1HoangIntentRouting.expand_query(normalized_query, intent)`
+  Purpose: build intent-aware query expansion set.
+- `Phase1HoangIntentRouting.rewrite_query(query_raw, intent)`
+  Purpose: build rewritten query tailored to retrieval.
+- `Phase1HoangIntentRouting.build_retrieval_plan(intent, top_k)`
+  Purpose: attach routing strategy, fallback, filters, and routing reason.
+- `Phase1HoangIntentRouting.build_output(...)`
+  Purpose: create one Phase 1 contract row.
+- `Phase1HoangIntentRouting.write_output(output, path)`
+  Purpose: write one Phase 1 output row.
+- `Phase1HoangIntentRouting.load_output(query_id, path)`
+  Purpose: load one Phase 1 row by id.
+
+### `aviation_rag/phase2_san_contract_adapter.py`
+- `Phase2SanContractAdapter._build_mock_output(input_row)`
+  Purpose: synthesize a local demo Phase 2 artifact without owning retrieval logic.
+- `Phase2SanContractAdapter.resolve_output(input_row, output_path)`
+  Purpose: prefer San artifact, else generated mock.
+- `Phase2SanContractAdapter.write_output(output, path)`
+  Purpose: materialize resolved Phase 2 output for debugging/demo.
+
+### `aviation_rag/phase2_san_faiss_retrieval.py`
+- `Phase2SanFaissRetrieval.retrieve(input_row)`
+  Purpose: run local FAISS retrieval over the ASRS dataset with TF-IDF/SVD semantic vectors, BM25 lexical scoring, and intent-aware ranking.
+
+### `aviation_rag/phase3_hoang_grounded_qa.py`
+- `_tokenize(text)`
+  Purpose: token overlap helper for grounding metrics.
+- `Phase3HoangGroundedQA._build_context(middle_output)`
+  Purpose: turn Phase 2 rows into LLM context block.
+- `Phase3HoangGroundedQA._call_route_llm(question, context_block, doc_ids)`
+  Purpose: grounded answer generation through OpenRouter model queue.
+- `Phase3HoangGroundedQA._call_route_llm_model(...)`
+  Purpose: call one OpenRouter model; Phase 3 retries once, then moves to the next model.
+- `Phase3HoangGroundedQA._fallback_answer(question, middle_output)`
+  Purpose: offline/local fallback answer.
+- `Phase3HoangGroundedQA._grounding_metrics(answer, contexts)`
+  Purpose: compute overlap-based hallucination proxy.
+- `Phase3HoangGroundedQA.generate(question, middle_output, allow_fallback)`
+  Purpose: create final grounded answer object.
+- `Phase3HoangGroundedQA.write_output(output, path)`
+  Purpose: write Phase 3 artifact row.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -221,6 +345,20 @@ Each `topk_docs` item (`RetrievedDoc`):
 ### Phase 3 Output: `FinalOutput`
 
 File: `artifacts/phase3_hoang_grounded_answer_output.jsonl`
+- `scripts/run_phase1_hoang_intent_routing.py`
+  Purpose: generate Phase 1 artifact from raw query input.
+- `scripts/validate_phase2_san_contract.py`
+  Purpose: validate San's Phase 2 artifact against shared schema.
+- `scripts/evaluate_phase3_hoang_grounding.py`
+  Purpose: summarize grounding quality from Phase 3 artifact.
+- `scripts/start_demo.ps1`
+  Purpose: open local API and Streamlit demo windows for Windows users.
+- `scripts/start_api.ps1`
+  Purpose: run only the FastAPI server.
+- `scripts/start_streamlit.ps1`
+  Purpose: run only the Streamlit demo UI.
+- `scripts/check_demo.ps1`
+  Purpose: verify local API and UI health endpoints quickly.
 
 | Field | Type | Description |
 |-------|------|-------------|

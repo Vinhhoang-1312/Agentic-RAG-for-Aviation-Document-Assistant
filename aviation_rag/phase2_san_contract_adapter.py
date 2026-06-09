@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import Settings
-from .io_utils import append_jsonl, find_by_query_id, read_jsonl
+from .io_utils import append_jsonl, find_by_query_id
 from .schemas import InputAgentOutput, MiddleAgentOutput, RetrievedDoc
 
 logger = logging.getLogger(__name__)
@@ -222,7 +222,6 @@ class Phase2SanContractAdapter:
         self,
         input_row: InputAgentOutput,
         output_path: Path | None = None,
-        sample_path: Path | None = None,
     ) -> MiddleAgentOutput:
         """
         Resolve Phase 2 output with graceful fallback chain:

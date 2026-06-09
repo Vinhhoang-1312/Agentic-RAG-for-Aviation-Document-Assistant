@@ -15,7 +15,7 @@ IntentLabel = Literal[
 
 IntentSource = Literal["ml", "heuristic"]
 
-RetrievalStrategy = Literal["bm25", "semantic", "hybrid", "metadata_first"]
+RetrievalStrategy = Literal["bm25", "semantic", "hybrid", "metadata_first", "hybrid_rrf"]
 
 
 class RetrievalPlan(BaseModel):
@@ -32,7 +32,7 @@ class InputAgentOutput(BaseModel):
     query_normalized: str
     intent: IntentLabel
     intent_confidence: float = Field(ge=0.0, le=1.0)
-    intent_source: IntentSource = "heuristic"
+    intent_source: IntentSource = "ml"
     expanded_queries: List[str] = Field(default_factory=list)
     rewritten_query: str
     retrieval_plan: RetrievalPlan
@@ -75,6 +75,7 @@ class Citation(BaseModel):
 
 class FinalOutput(BaseModel):
     query_id: str
+    query_raw: str = ""
     answer: str
     citations: List[Citation]
     hallucination_risk: float = Field(ge=0.0, le=1.0)

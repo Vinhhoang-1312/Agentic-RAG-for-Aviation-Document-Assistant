@@ -1,6 +1,4 @@
 langgraph>=0.2.35
-langchain-openai>=0.2.0
-langchain-core>=0.3.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
 pydantic>=2.7.0
