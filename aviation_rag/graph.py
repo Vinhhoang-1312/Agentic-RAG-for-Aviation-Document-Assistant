@@ -5,12 +5,14 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from .cancel import raise_if_cancelled
 from .config import Settings, configure_tracing_env
 from .io_utils import find_by_query_id
 from .phase1_hoang_intent_routing import Phase1HoangIntentRouting
 from .phase2_san_contract_adapter import Phase2SanContractAdapter
 from .phase2_san_faiss_retrieval import Phase2SanFaissRetrieval
 from .phase3_hoang_grounded_qa import Phase3HoangGroundedQA
+from .runtime import resolve_phase2_output
 from .schemas import InputAgentOutput, MiddleAgentOutput
 
 
@@ -39,6 +41,7 @@ class RagState(TypedDict, total=False):
     write_phase1_artifact: bool
     write_phase2_artifact: bool
     write_phase3_artifact: bool
+    cancel_event: Any
 
 
 def build_graph(settings: Settings):
@@ -49,6 +52,7 @@ def build_graph(settings: Settings):
     phase3_agent = Phase3HoangGroundedQA(settings)
 
     def phase1_hoang_input_node(state: RagState) -> RagState:
+        raise_if_cancelled(state.get("cancel_event"))
         phase1_path = Path(state.get("phase1_artifact_path", str(settings.phase1_output_path)))
         write_phase1 = bool(state.get("write_phase1_artifact", False))
 
@@ -64,10 +68,12 @@ def build_graph(settings: Settings):
                 strategy=override.get("strategy"),
             )
             if write_phase1:
+                raise_if_cancelled(state.get("cancel_event"))
                 phase1_agent.write_output(phase1_output, phase1_path)
         else:
             raise ValueError("State must include `query_raw` or (`query_id` + phase1 artifact).")
 
+        raise_if_cancelled(state.get("cancel_event"))
         return {
             "query_id": phase1_output.query_id,
             "query_raw": phase1_output.query_raw,
@@ -82,43 +88,31 @@ def build_graph(settings: Settings):
         }
 
     def phase2_san_contract_node(state: RagState) -> RagState:
+        raise_if_cancelled(state.get("cancel_event"))
         phase1_output = InputAgentOutput(
             query_id=state["query_id"],
             query_raw=state["query_raw"],
             query_normalized=state["query_normalized"],
             intent=state["intent"],
             intent_confidence=float(state["intent_confidence"]),
-            intent_source=state.get("intent_source", "heuristic"),
+            intent_source=state.get("intent_source", "ml"),
             expanded_queries=state.get("expanded_queries", []),
             rewritten_query=state["rewritten_query"],
             retrieval_plan=state["retrieval_plan"],
         )
         phase2_path = Path(state.get("phase2_artifact_path", str(settings.phase2_output_path)))
-        phase2_output = phase2_adapter.resolve_output(phase1_output, output_path=phase2_path)
-
-        if phase2_output.retrieval_diagnostics.get("adapter_mode") == "generated_mock":
-            if phase2_retrieval.available:
-                phase2_output = phase2_retrieval.retrieve(phase1_output)
-            else:
-                phase2_output.retrieval_diagnostics.update(
-                    {
-                        "retrieval_backend": "generated_mock",
-                        "embedding_model": settings.phase2_embedding_model,
-                        "embedding_backend": "unavailable",
-                        "embedding_dim": 0,
-                        "faiss_index_type": "IndexFlatIP",
-                        "normalization": "L2",
-                        "chunk_count": 0,
-                        "bm25_enabled": False,
-                        "metadata_filter_applied": False,
-                        "fusion_method": "none",
-                        "latency_ms": 0.0,
-                        "fallback_reason": phase2_retrieval.build_error,
-                    }
-                )
+        phase2_output = resolve_phase2_output(
+            settings,
+            phase1_output,
+            phase2_retrieval=phase2_retrieval,
+            phase2_adapter=phase2_adapter,
+            artifact_path=phase2_path,
+        )
 
         if bool(state.get("write_phase2_artifact", True)):
+            raise_if_cancelled(state.get("cancel_event"))
             phase2_adapter.write_output(phase2_output, phase2_path)
+        raise_if_cancelled(state.get("cancel_event"))
         return {
             "topk_docs": [doc.model_dump() for doc in phase2_output.topk_docs],
             "retrieval_diagnostics": phase2_output.retrieval_diagnostics,
@@ -126,6 +120,7 @@ def build_graph(settings: Settings):
         }
 
     def phase3_hoang_output_node(state: RagState) -> RagState:
+        raise_if_cancelled(state.get("cancel_event"))
         phase2_output = MiddleAgentOutput(
             query_id=state["query_id"],
             predicted_intent=state["intent"],
@@ -137,12 +132,16 @@ def build_graph(settings: Settings):
             middle_output=phase2_output,
             allow_fallback=bool(state.get("allow_local_fallback", True)),
             force_local=bool(state.get("force_local_answer", False)),
+            cancel_event=state.get("cancel_event"),
         )
         phase3_path = Path(state.get("phase3_artifact_path", str(settings.phase3_output_path)))
         if bool(state.get("write_phase3_artifact", True)):
+            raise_if_cancelled(state.get("cancel_event"))
             phase3_agent.write_output(final_output, phase3_path)
+        raise_if_cancelled(state.get("cancel_event"))
         return {
             "answer": final_output.answer,
+            "query_raw": final_output.query_raw or state.get("query_raw", ""),
             "citations": [item.model_dump() for item in final_output.citations],
             "hallucination_risk": final_output.hallucination_risk,
             "grounding_report": final_output.grounding_report,

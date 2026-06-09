@@ -16,7 +16,7 @@ class Phase2ContractAdapterTests(unittest.TestCase):
             settings = Settings(
                 data_path=temp_path / "missing.csv",
                 phase2_output_path=temp_path / "phase2_san_retrieval_output.jsonl",
-                input_intent_mode="heuristic",
+                input_intent_mode="ml",
                 langsmith_tracing="false",
             )
             phase1 = Phase1HoangIntentRouting(settings)

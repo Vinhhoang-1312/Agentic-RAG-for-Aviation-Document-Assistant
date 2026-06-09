@@ -70,6 +70,14 @@ def audit_notebook(path: Path) -> list[dict[str, Any]]:
         "__name__": "__notebook__",
         "__file__": str(path),
     }
+
+    def _display(obj: Any) -> None:
+        if hasattr(obj, "to_string"):
+            print(obj.to_string())
+        else:
+            print(obj)
+
+    namespace["display"] = _display
     sys.path.insert(0, str(PROJECT_ROOT))
     results: list[dict[str, Any]] = []
     for index, cell in enumerate(notebook.get("cells", [])):

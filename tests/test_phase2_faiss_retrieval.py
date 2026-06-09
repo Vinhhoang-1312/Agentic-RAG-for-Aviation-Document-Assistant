@@ -71,7 +71,7 @@ class Phase2FaissRetrievalTests(unittest.TestCase):
             data_path=dataset_path,
             phase2_index_dir=temp_path / "phase2_index",
             phase2_output_path=temp_path / "phase2.jsonl",
-            input_intent_mode="heuristic",
+            input_intent_mode="ml",
             langsmith_tracing="false",
             retrieval_max_docs=100,
             retrieval_tfidf_max_features=512,

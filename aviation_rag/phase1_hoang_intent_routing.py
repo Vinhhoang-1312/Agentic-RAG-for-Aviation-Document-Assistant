@@ -2,16 +2,9 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
-
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-
 from .config import Settings
-from .intent_rules import map_row_to_intent
 from .io_utils import append_jsonl, find_by_query_id
 from .schemas import InputAgentOutput, RetrievalPlan
 
@@ -23,6 +16,125 @@ INTENT_LABELS = (
     "Technical_Procedure",
     "Metadata_Query",
     "Factoid",
+)
+
+SEED_INTENT_TRAINING_EXAMPLES: tuple[tuple[str, str], ...] = (
+    (
+        "engine failure after takeoff with emergency return",
+        "Incident_Report",
+    ),
+    (
+        "compressor stall during climb and return to departure airport",
+        "Incident_Report",
+    ),
+    (
+        "runway incursion during taxi with aircraft conflict",
+        "Incident_Report",
+    ),
+    (
+        "smoke in cabin diversion and emergency landing",
+        "Incident_Report",
+    ),
+    (
+        "loss of separation on final approach",
+        "Incident_Report",
+    ),
+    (
+        "hard landing after unstable approach",
+        "Incident_Report",
+    ),
+    (
+        "qrh checklist for engine fire warning",
+        "Technical_Procedure",
+    ),
+    (
+        "maintenance troubleshooting procedure for hydraulic leak",
+        "Technical_Procedure",
+    ),
+    (
+        "minimum equipment list deferral and logbook procedure",
+        "Technical_Procedure",
+    ),
+    (
+        "component failure checklist after warning message",
+        "Technical_Procedure",
+    ),
+    (
+        "aircraft manual procedure for autopilot disconnect",
+        "Technical_Procedure",
+    ),
+    (
+        "maintenance release procedure for deferred item",
+        "Technical_Procedure",
+    ),
+    (
+        "den bao engine oil press sang thi lam gi",
+        "Technical_Procedure",
+    ),
+    (
+        "den bao engine oil pressure sang thi lam gi",
+        "Technical_Procedure",
+    ),
+    (
+        "can lam gi khi engine oil press warning",
+        "Technical_Procedure",
+    ),
+    (
+        "xu ly canh bao hydraulic pressure",
+        "Technical_Procedure",
+    ),
+    (
+        "what should the crew do after engine oil pressure warning",
+        "Technical_Procedure",
+    ),
+    (
+        "crosswind turbulence on final approach",
+        "Metadata_Query",
+    ),
+    (
+        "runway condition and airport visibility during landing",
+        "Metadata_Query",
+    ),
+    (
+        "icing weather condition during descent",
+        "Metadata_Query",
+    ),
+    (
+        "airport wind shear report and weather metadata",
+        "Metadata_Query",
+    ),
+    (
+        "snow rain fog visibility at departure airport",
+        "Metadata_Query",
+    ),
+    (
+        "altitude flight condition and runway metadata",
+        "Metadata_Query",
+    ),
+    (
+        "what is the meaning of MEL in aviation",
+        "Factoid",
+    ),
+    (
+        "what does QRH stand for",
+        "Factoid",
+    ),
+    (
+        "define runway incursion",
+        "Factoid",
+    ),
+    (
+        "what is TCAS",
+        "Factoid",
+    ),
+    (
+        "what does ILS mean",
+        "Factoid",
+    ),
+    (
+        "which airport code is JFK",
+        "Factoid",
+    ),
 )
 
 AVIATION_JARGON_MAP: Dict[str, str] = {
@@ -168,75 +280,43 @@ def heuristic_intent(normalized_query: str) -> str:
     return "Incident_Report"
 
 
-@dataclass
-class IntentModel:
-    vectorizer: TfidfVectorizer
-    classifier: LogisticRegression
-
-    def predict(self, text: str) -> Tuple[str, float]:
-        features = self.vectorizer.transform([text])
-        probabilities = self.classifier.predict_proba(features)[0]
-        best_index = probabilities.argmax()
-        return self.classifier.classes_[best_index], float(probabilities[best_index])
-
-
 class Phase1HoangIntentRouting:
     def __init__(self, settings: Settings):
+        from .phase1_intent_training import load_or_train_intent_model
+
         self.settings = settings
         mode = (settings.input_intent_mode or "auto").lower().strip()
-        if mode == "heuristic":
-            self.intent_model = None
-        elif mode in {"auto", "ml"}:
-            self.intent_model = self._maybe_train_intent_model(settings.data_path)
-        else:
-            self.intent_model = None
-
-    def _maybe_train_intent_model(self, data_path: Path) -> IntentModel | None:
-        if not data_path.exists():
-            return None
-
-        dataframe = pd.read_csv(data_path, low_memory=False)
-        text_columns = [
-            column
-            for column in ["report_summary", "report1_narrative", "report2_narrative"]
-            if column in dataframe.columns
-        ]
-        if not text_columns:
-            return None
-
-        texts = dataframe[text_columns].fillna("").agg(" ".join, axis=1).astype(str).map(normalize_text)
-        labels = dataframe.apply(map_row_to_intent, axis=1)
-        if labels.nunique() < 2:
-            return None
-
-        doc_count = len(texts)
-        min_df = 1 if doc_count < 20 else 3
-        max_df = 1.0 if doc_count < 20 else 0.95
-
-        vectorizer = TfidfVectorizer(
-            ngram_range=(1, 2),
-            min_df=min_df,
-            max_df=max_df,
-            max_features=60000,
-        )
-        features = vectorizer.fit_transform(texts)
-        classifier = LogisticRegression(max_iter=1200, class_weight="balanced")
-        classifier.fit(features, labels)
-        return IntentModel(vectorizer=vectorizer, classifier=classifier)
+        if mode not in {"ml", "auto", "heuristic"}:
+            raise ValueError("INPUT_INTENT_MODE must be one of: ml, auto, heuristic.")
+        self.intent_model = load_or_train_intent_model(settings)
+        self.intent_training_mode = "tfidf_logistic_regression"
+        self.intent_training_report = self.intent_model.training_report or {}
 
     def predict_intent(self, query_raw: str) -> Tuple[str, float, str]:
+        from .phase1_intent_training import preprocess_for_intent_ml
+
+        mode = (self.settings.input_intent_mode or "auto").lower().strip()
         normalized = normalize_text(query_raw)
+
+        if mode == "heuristic":
+            label = heuristic_intent(normalized)
+            return label, 1.0, "heuristic"
+
+        ml_text = preprocess_for_intent_ml(query_raw, use_stemming=self.settings.phase1_use_stemming)
+        ml_label, ml_confidence = self.intent_model.predict(ml_text)
+        if ml_label not in INTENT_LABELS:
+            raise RuntimeError(f"Phase 1 intent model returned unknown label: {ml_label}")
+
+        if mode == "ml":
+            return ml_label, ml_confidence, "ml"
+
         heuristic_label = heuristic_intent(normalized)
-
-        if self.intent_model is None:
-            return heuristic_label, 0.60, "heuristic"
-
-        label, confidence = self.intent_model.predict(normalized)
-        if heuristic_label == "Factoid" and confidence < 0.75:
-            return "Factoid", max(confidence, 0.70), "heuristic"
-        if label not in INTENT_LABELS or confidence < self.settings.intent_conf_threshold:
-            return heuristic_label, max(confidence, self.settings.intent_conf_threshold), "heuristic"
-        return label, confidence, "ml"
+        threshold = float(self.settings.phase1_ml_confidence_threshold)
+        if ml_label == heuristic_label:
+            return ml_label, ml_confidence, "ml"
+        if ml_confidence < threshold:
+            return heuristic_label, max(ml_confidence, threshold), "heuristic"
+        return ml_label, ml_confidence, "ml"
 
     def expand_query(self, normalized_query: str, intent: str) -> List[str]:
         expansions = [normalized_query]

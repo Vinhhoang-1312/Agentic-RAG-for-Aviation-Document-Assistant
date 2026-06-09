@@ -1,0 +1,242 @@
+{
+  "training_rows": 231,
+  "label_counts": {
+    "Incident_Report": 50,
+    "Technical_Procedure": 85,
+    "Metadata_Query": 49,
+    "Factoid": 47
+  },
+  "training_report": {
+    "training_corpus": {
+      "type": "query_only",
+      "sources": [
+        "seed_examples",
+        "training_queries_jsonl",
+        "seed_augmentation"
+      ],
+      "excluded": [
+        "asrs_narratives",
+        "gold_eval_queries"
+      ],
+      "gold_holdout_rows": 8,
+      "gold_holdout_skipped_rows": 6,
+      "training_queries_path": "C:\\Users\\DELL\\Desktop\\Vinh Hoang\\Master Program\\Xử lý ngôn ngữ tự nhiên\\Project\\data\\phase1_intent_training_queries.jsonl"
+    },
+    "preprocessing": {
+      "normalize_text": true,
+      "aviation_jargon_expansion": true,
+      "english_stemming": true,
+      "stemmer_backend": "nltk_snowball_english"
+    },
+    "vectorizer": {
+      "type": "TfidfVectorizer",
+      "ngram_range": [
+        1,
+        2
+      ],
+      "max_features": 60000
+    },
+    "classifier": {
+      "type": "OneVsRestClassifier+LogisticRegression",
+      "class_weight": "balanced"
+    },
+    "validation_metrics": {
+      "validation_split": 0.2,
+      "train_rows": 184,
+      "validation_rows": 47,
+      "note": "Validation is on held-out query-only training rows, not ASRS narratives.",
+      "validation_accuracy": 0.9787,
+      "validation_macro_f1": 0.9749,
+      "classification_report": {
+        "Factoid": {
+          "precision": 1.0,
+          "recall": 0.9,
+          "f1-score": 0.9473684210526315,
+          "support": 10.0
+        },
+        "Incident_Report": {
+          "precision": 0.9090909090909091,
+          "recall": 1.0,
+          "f1-score": 0.9523809523809523,
+          "support": 10.0
+        },
+        "Metadata_Query": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 10.0
+        },
+        "Technical_Procedure": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 17.0
+        },
+        "accuracy": 0.9787234042553191,
+        "macro avg": {
+          "precision": 0.9772727272727273,
+          "recall": 0.975,
+          "f1-score": 0.974937343358396,
+          "support": 47.0
+        },
+        "weighted avg": {
+          "precision": 0.9806576402321083,
+          "recall": 0.9787234042553191,
+          "f1-score": 0.978670079453954,
+          "support": 47.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          9,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          10,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          10,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          17
+        ]
+      ],
+      "confusion_labels": [
+        "Factoid",
+        "Incident_Report",
+        "Metadata_Query",
+        "Technical_Procedure"
+      ]
+    },
+    "gold_metrics": {
+      "gold_path": "C:\\Users\\DELL\\Desktop\\Vinh Hoang\\Master Program\\Xử lý ngôn ngữ tự nhiên\\Project\\data\\phase1_intent_gold_labels.jsonl",
+      "gold_rows": 8,
+      "gold_accuracy": 1.0,
+      "gold_eval_rows": [
+        {
+          "query_id": "q_incident_001",
+          "expected_intent": "Incident_Report",
+          "predicted_intent": "Incident_Report",
+          "confidence": 0.5562,
+          "correct": true
+        },
+        {
+          "query_id": "q_procedure_001",
+          "expected_intent": "Technical_Procedure",
+          "predicted_intent": "Technical_Procedure",
+          "confidence": 0.652,
+          "correct": true
+        },
+        {
+          "query_id": "q_metadata_001",
+          "expected_intent": "Metadata_Query",
+          "predicted_intent": "Metadata_Query",
+          "confidence": 0.549,
+          "correct": true
+        },
+        {
+          "query_id": "q_factoid_001",
+          "expected_intent": "Factoid",
+          "predicted_intent": "Factoid",
+          "confidence": 0.6015,
+          "correct": true
+        },
+        {
+          "query_id": "q_incident_002",
+          "expected_intent": "Incident_Report",
+          "predicted_intent": "Incident_Report",
+          "confidence": 0.4069,
+          "correct": true
+        },
+        {
+          "query_id": "q_procedure_002",
+          "expected_intent": "Technical_Procedure",
+          "predicted_intent": "Technical_Procedure",
+          "confidence": 0.4753,
+          "correct": true
+        },
+        {
+          "query_id": "q_metadata_002",
+          "expected_intent": "Metadata_Query",
+          "predicted_intent": "Metadata_Query",
+          "confidence": 0.4595,
+          "correct": true
+        },
+        {
+          "query_id": "q_incident_003",
+          "expected_intent": "Incident_Report",
+          "predicted_intent": "Incident_Report",
+          "confidence": 0.4641,
+          "correct": true
+        }
+      ],
+      "note": "Gold queries are held out from training by exact normalized match."
+    },
+    "heuristic_gold_metrics": {
+      "gold_path": "C:\\Users\\DELL\\Desktop\\Vinh Hoang\\Master Program\\Xử lý ngôn ngữ tự nhiên\\Project\\data\\phase1_intent_gold_labels.jsonl",
+      "gold_rows": 8,
+      "gold_accuracy": 1.0,
+      "gold_eval_rows": [
+        {
+          "query_id": "q_incident_001",
+          "expected_intent": "Incident_Report",
+          "predicted_intent": "Incident_Report",
+          "correct": true
+        },
+        {
+          "query_id": "q_procedure_001",
+          "expected_intent": "Technical_Procedure",
+          "predicted_intent": "Technical_Procedure",
+          "correct": true
+        },
+        {
+          "query_id": "q_metadata_001",
+          "expected_intent": "Metadata_Query",
+          "predicted_intent": "Metadata_Query",
+          "correct": true
+        },
+        {
+          "query_id": "q_factoid_001",
+          "expected_intent": "Factoid",
+          "predicted_intent": "Factoid",
+          "correct": true
+        },
+        {
+          "query_id": "q_incident_002",
+          "expected_intent": "Incident_Report",
+          "predicted_intent": "Incident_Report",
+          "correct": true
+        },
+        {
+          "query_id": "q_procedure_002",
+          "expected_intent": "Technical_Procedure",
+          "predicted_intent": "Technical_Procedure",
+          "correct": true
+        },
+        {
+          "query_id": "q_metadata_002",
+          "expected_intent": "Metadata_Query",
+          "predicted_intent": "Metadata_Query",
+          "correct": true
+        },
+        {
+          "query_id": "q_incident_003",
+          "expected_intent": "Incident_Report",
+          "predicted_intent": "Incident_Report",
+          "correct": true
+        }
+      ]
+    }
+  }
+}

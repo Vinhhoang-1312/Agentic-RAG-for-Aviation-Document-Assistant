@@ -179,6 +179,11 @@ class Phase2RetrievalEngine:
         return chunks
 
     def _build_semantic_index(self, chunks: list[CorpusChunk]) -> None:
+        persisted_info = self._load_persisted_semantic_artifacts(chunks)
+        if persisted_info is not None:
+            self._info = persisted_info
+            return
+
         dense_texts = [chunk.chunk_text for chunk in chunks]
         fallback_reason: str | None = None
         embedding_backend = "sentence_transformers"
@@ -212,6 +217,67 @@ class Phase2RetrievalEngine:
             index_dir=str(self.settings.phase2_index_dir),
             fallback_reason=fallback_reason,
         )
+
+    def _load_persisted_semantic_artifacts(self, chunks: list[CorpusChunk]) -> Phase2IndexInfo | None:
+        forced_fallback_values = {"tfidf_svd_fallback", "tfidf-svd-fallback", "fallback:tfidf_svd"}
+        if self.settings.phase2_embedding_model.strip().lower() in forced_fallback_values:
+            return None
+
+        index_dir = Path(self.settings.phase2_index_dir)
+        metadata_path = index_dir / "index_metadata.json"
+        vectors_path = index_dir / "vectors.npy"
+        index_path = index_dir / "faiss.index"
+        if not (metadata_path.exists() and vectors_path.exists() and index_path.exists()):
+            return None
+
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("embedding_backend") != "sentence_transformers":
+                return None
+            if metadata.get("embedding_model") != self.settings.phase2_embedding_model:
+                return None
+            if int(metadata.get("chunk_count", -1)) != len(chunks):
+                return None
+            if SentenceTransformer is None:
+                return None
+
+            vectors = np.load(vectors_path).astype("float32")
+            if vectors.ndim != 2 or vectors.shape[0] != len(chunks):
+                return None
+            index = self._read_faiss_index(index_path)
+            if index is None:
+                return None
+
+            self._sentence_model = SentenceTransformer(self.settings.phase2_embedding_model)
+            self._semantic_vectors = vectors
+            self._semantic_index = index
+            return Phase2IndexInfo(
+                retrieval_backend="phase2_dense_bm25_hybrid",
+                embedding_model=self.settings.phase2_embedding_model,
+                embedding_backend="sentence_transformers",
+                embedding_dim=int(vectors.shape[1]),
+                faiss_index_type=str(metadata.get("faiss_index_type", "IndexFlatIP")),
+                normalization=str(metadata.get("normalization", "L2")),
+                chunk_count=len(chunks),
+                bm25_enabled=True,
+                index_dir=str(self.settings.phase2_index_dir),
+                fallback_reason=None,
+            )
+        except Exception:
+            return None
+
+    def _read_faiss_index(self, index_path: Path) -> Any | None:
+        if faiss is None:
+            return None
+        try:
+            return faiss.read_index(str(index_path))
+        except Exception:
+            temp_path = Path(tempfile.gettempdir()) / "phase2_faiss_index_read.tmp"
+            try:
+                temp_path.write_bytes(index_path.read_bytes())
+                return faiss.read_index(str(temp_path))
+            finally:
+                temp_path.unlink(missing_ok=True)
 
     def _encode_with_sentence_transformer(self, texts: list[str]) -> tuple[np.ndarray, Any]:
         forced_fallback_values = {"tfidf_svd_fallback", "tfidf-svd-fallback", "fallback:tfidf_svd"}
