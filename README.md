@@ -1,269 +1,161 @@
-# Vinh Hoang Phase-Based Aviation Workflow
+# Aviation Document Retrieval System
+## Intent-Aware Semantic RAG for Aviation Safety
 
-This repository contains Vinh Hoang's phase ownership plus a local integrated demo path for the full aviation RAG project:
+This repository implements a full **Retrieval-Augmented Generation (RAG)** pipeline for aviation safety documents, built as a final project for the NLP course.
 
-- **Phase 1 - Intent-Aware Routing**
-- **Phase 3 - Grounded Output**
+The system uses a **3-phase agentic architecture** orchestrated by LangGraph:
+
+1. **Phase 1 — Intent-Aware Routing** (Vinh Hoang)
+2. **Phase 2 — Semantic Retrieval** (Quan San)
+3. **Phase 3 — Grounded QA Generation** (Vinh Hoang)
+
+---
+
+## Team Ownership
+
+### Vinh Hoang
+- **Phase 1**: Intent classification (TF-IDF + Logistic Regression / heuristic), query normalization, expansion, rewriting, dynamic retrieval routing
+- **Phase 3**: Grounded answer generation (OpenAI GPT), citation attachment, hallucination-risk estimation
+- **Orchestration**: LangGraph workflow, CLI, API, LangSmith tracing
+
+### Quan San
+- **Phase 2**: Semantic Retrieval Engine with 4 strategies
+  - `semantic` — FAISS cosine similarity (all-MiniLM-L6-v2, 384-dim)
+  - `bm25` — BM25Okapi keyword scoring
+  - `hybrid` — Reciprocal Rank Fusion (semantic + BM25)
+  - `metadata_first` — Metadata filtering → semantic search on subset
+- Text preprocessing, chunking, embedding, indexing
+- Producing real retrieval results from ASRS aviation incident reports
+
+### Shared
+- `LangGraph` workflow structure
+- `LangSmith` tracing
+- JSONL artifact contracts (`schemas.py`)
+- CLI / API integration
+
+---
+
+## System Architecture
+
+```
+User Query
+    │
+    ▼
+┌─────────────────────────────────────┐
+│  Phase 1 — Intent-Aware Routing     │  (Vinh Hoang)
+│  • Intent Classification            │
+│  • Query Expansion & Rewriting      │
+│  • Retrieval Strategy Selection     │
+└──────────────┬──────────────────────┘
+               │ InputAgentOutput
+               ▼
+┌─────────────────────────────────────┐
+│  Phase 2 — Semantic Retrieval       │  (Quan San)
+│  • FAISS / BM25 / Hybrid / Meta    │
+│  • 6,745+ chunks from ASRS data    │
+│  • ~15–47ms per query              │
+└──────────────┬──────────────────────┘
+               │ MiddleAgentOutput
+               ▼
+┌─────────────────────────────────────┐
+│  Phase 3 — Grounded QA             │  (Vinh Hoang)
+│  • LLM Answer Generation           │
+│  • Citation & Hallucination Check   │
+└─────────────────────────────────────┘
+               │
+               ▼
+         Grounded Answer
+```
+
+---
+
+## Folder Map
+
+```
+Agentic-RAG-for-Aviation-Document-Assistant/
+├── aviation_rag/                     # Main Python package
+│   ├── __init__.py
+│   ├── config.py                     # Central settings (paths, model, env)
+│   ├── schemas.py                    # Shared Pydantic contracts
+│   ├── io_utils.py                   # JSONL read/write utilities
+│   ├── intent_rules.py              # Intent label mapping rules
+│   ├── graph.py                      # LangGraph workflow (Phase 1→2→3)
+│   ├── runtime.py                    # State builder for CLI/API
+│   │
+│   ├── phase1_hoang_intent_routing.py   # Phase 1 (Hoang)
+│   ├── phase2_san_contract_adapter.py   # Phase 2 adapter (San)
+│   ├── phase3_hoang_grounded_qa.py      # Phase 3 (Hoang)
+│   │
+│   ├── retrieval/                    # Retrieval engine sub-package (San)
+│   │   ├── __init__.py
+│   │   ├── engine.py                 # Core engine — 4 strategies
+│   │   ├── indexer.py                # FAISS + BM25 index builder
+│   │   └── preprocess.py            # Text normalization & chunking
+│   │
+│   ├── api.py                        # FastAPI HTTP endpoint
+│   ├── cli.py                        # Single-query CLI
+│   └── chat_cli.py                   # Interactive chat CLI
+│
+├── scripts/
+│   ├── run_phase1_hoang_intent_routing.py
+│   ├── build_phase2_san_index.py     # Build retrieval index (San)
+│   ├── validate_phase2_san_contract.py
+│   └── evaluate_phase3_hoang_grounding.py
+│
+├── tests/
+│   ├── test_retrieval_engine.py      # Phase 2 engine tests (San)
+│   ├── test_phase2_contract_adapter.py
+│   ├── test_contracts.py
+│   ├── test_pipeline_smoke.py
+│   ├── test_input_agent_modes.py
+│   ├── test_output_agent_fallback.py
+│   ├── test_api_smoke.py
+│   └── test_runtime_state.py
+│
+├── notebooks/
+│   ├── phase1_hoang_intent_routing_research.ipynb
+│   └── phase3_hoang_grounded_output_research.ipynb
+│
+├── artifacts/                        # JSONL artifacts (gitignored except samples)
+│   ├── phase0_user_query_samples.sample.jsonl
+│   └── phase2_san_retrieval_output.sample.jsonl
+│
+├── data/                             # Local-only data (gitignored)
+│   ├── kaggle/ASRS-clean-dataset-aviation-safety.csv
+│   └── index_store/                  # FAISS + BM25 index (built once)
+│
+├── app.py                            # Streamlit Demo UI
+├── requirements.txt
+├── .env.example
+└── .gitignore
+```
+
+---
 
 ## Quick Start
 
-Install dependencies:
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Run the local demo on Windows:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_demo.ps1
-```
-
-Check that both services are alive:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/check_demo.ps1
-```
-
-Default local URLs:
-- Streamlit UI: `http://127.0.0.1:8501`
-- FastAPI health: `http://127.0.0.1:8000/health`
-
-Important runtime note:
-- The first API or UI query can be slower because the LangGraph runtime and local retrieval index are initialized lazily on first real request.
-- If `LANGSMITH_TRACING=true` and the machine cannot reach LangSmith, the app still works locally but may log tracing connection errors.
-- Phase 3 uses OpenRouter as the Route LLM provider. Keep `OPENROUTER_API_KEY` only in local `.env`; `.env` is ignored by Git.
-- `OPENROUTER_MODELS` is an ordered failover queue. Each model is tried once, retried once on failure, then skipped for the rest of that request.
-
-`Quang San` will still be able to plug in his own Phase 2 artifact.  
-This repo now supports both:
-- a **real local FAISS retrieval path** over the ASRS dataset for integrated demos
-- a **Phase 2 contract adapter + generated mock fallback** when retrieval data is unavailable
-
-## What This Repo Owns
-
-### Vinh Hoang owns
-- Phase 1: user query understanding
-- Intent classification
-- Query normalization
-- Query expansion
-- Query rewriting
-- Dynamic retrieval routing
-- Exporting the shared artifact for San
-- Phase 3 grounded answer generation
-- Citation attachment
-- Hallucination-risk estimation
-- LangGraph orchestration around phases 1 -> 2 contract -> 3
-
-### Quang San owns
-- The shared Phase 2 output contract
-- Partner-side retrieval experimentation and alternative retrieval implementations
-- Producing a real Phase 2 artifact that matches the shared contract
-
-### Shared
-- `LangGraph` workflow structure
-- `LangSmith` tracing
-- JSONL artifact contracts
-- CLI / API integration shape
-
-## Full Flow Explained
-
-### Real team flow
-1. User sends a query.
-2. **Phase 1 - Hoang** classifies intent and selects retrieval strategy.
-3. Hoang exports `phase1_hoang_intent_routing_output.jsonl`.
-4. **Phase 2 - San** reads that file and performs retrieval.
-5. San exports `phase2_san_retrieval_output.jsonl`.
-6. **Phase 3 - Hoang** reads San's output and generates grounded answer.
-7. Hoang exports `phase3_hoang_grounded_answer_output.jsonl`.
-
-### Local demo flow in this repo
-1. User sends a query.
-2. Hoang Phase 1 runs normally.
-3. If San's Phase 2 artifact exists, LangGraph reads it.
-4. If San's artifact is missing, the local Phase 2 runtime first attempts FAISS retrieval over the local dataset.
-5. If retrieval data is unavailable, the Phase 2 contract adapter uses generated mock data.
-6. Hoang Phase 3 still runs end-to-end for local demo and testing.
-
-## Folder Map
-
-- `aviation_rag/`
-  Runtime package for LangGraph, CLI, API, shared schemas, and Hoang-owned phase code.
-- `notebooks/`
-  Hoang research notebooks only.
-- `scripts/`
-  Utility scripts for Phase 1 generation, Phase 2 contract validation, and Phase 3 evaluation.
-- `tests/`
-  Contract, smoke, and runtime tests. Keep this folder because it protects the API, graph, retrieval, and schema behavior during refactors.
-- `artifacts/`
-  Runtime output artifacts and retained placeholders such as `.gitkeep`.
-- `data/`
-  Local-only research data. Useful for Phase 1 research mode, not required for app runtime.
-
-## Artifact Contracts
-
-### Phase 1 output
-File:
-- `artifacts/phase1_hoang_intent_routing_output.jsonl`
-
-Produced by:
-- Hoang Phase 1 notebook
-- Hoang CLI / API / LangGraph runtime
-
-Schema:
-- `query_id`
-- `query_raw`
-- `query_normalized`
-- `intent`
-- `intent_confidence`
-- `intent_source`
-- `expanded_queries`
-- `rewritten_query`
-- `retrieval_plan`
-- `created_at`
-
-`retrieval_plan` fields:
-- `strategy`
-- `fallback_strategy`
-- `top_k`
-- `filters`
-- `routing_reason`
-
-### Phase 2 output
-File:
-- `artifacts/phase2_san_retrieval_output.jsonl`
-
-Owned by:
-- Quang San
-
-Schema:
-- `query_id`
-- `predicted_intent`
-- `topk_docs`
-- `retrieval_diagnostics`
-- `created_at`
-
-Each `topk_docs` item contains:
-- `doc_id`
-- `chunk_id`
-- `chunk_text`
-- `scores`
-- `metadata`
-
-### Phase 3 output
-File:
-- `artifacts/phase3_hoang_grounded_answer_output.jsonl`
-
-Produced by:
-- Hoang Phase 3 notebook
-- Hoang CLI / API / LangGraph runtime
-
-Schema:
-- `query_id`
-- `answer`
-- `citations`
-- `hallucination_risk`
-- `grounding_report`
-- `created_at`
-
-## Intent Taxonomy Used by Hoang
-
-Hoang Phase 1 routes into 4 intents:
-
-- `Incident_Report`
-- `Technical_Procedure`
-- `Metadata_Query`
-- `Factoid`
-
-Default routing policy:
-
-- `Incident_Report -> semantic`, fallback `hybrid`
-- `Technical_Procedure -> bm25`, fallback `hybrid`
-- `Metadata_Query -> metadata_first`, fallback `bm25`
-- `Factoid -> semantic`, fallback `hybrid`
-
-Important note:
-- Phase 1 trains `TF-IDF + Logistic Regression` on **query-like text only** (seed + `data/phase1_intent_training_queries.jsonl` + augmentation).
-- ASRS CSV narratives are **not** used as intent training labels anymore (they caused train/infer mismatch).
-- Gold-set queries in `data/phase1_intent_gold_labels.jsonl` are held out for evaluation only.
-- Default runtime mode is `auto`: ML when confident/agrees with heuristic, otherwise heuristic fallback.
-
-## Notebook Map
-
-### `notebooks/phase1_hoang_intent_routing_research.ipynb`
-Purpose:
-- Hoang's research notebook for the full pre-retrieval phase.
-
-Cell map:
-- Cell 0: title and scope of Hoang phase 1
-- Cell 1: imports and settings overview
-- Cell 2: sample-query explanation
-- Cell 3: sample query list for the 4 intents
-- Cell 4: section header for intent classification
-- Cell 5: build Phase 1 outputs and inspect intent / rewritten query
-- Cell 6: section header for dynamic routing
-- Cell 7: inspect strategy, fallback strategy, filters, and routing reason
-- Cell 8: section header for export
-- Cell 9: write `phase1_hoang_intent_routing_output.jsonl` and validate schema
-
-### `notebooks/phase3_hoang_grounded_output_research.ipynb`
-Purpose:
-- Hoang's research notebook for grounded output generation.
-
-Cell map:
-- Cell 0: title and scope of Hoang phase 3
-- Cell 1: imports and artifact path overview
-- Cell 2: section header for loading phase 1 artifact
-- Cell 3: load Phase 1 artifact and inspect first row
-- Cell 4: section header for Phase 2 contract consumption
-- Cell 5: resolve San contract via real artifact, local FAISS retrieval, or generated mock fallback
-- Cell 6: section header for grounded QA generation
-- Cell 7: generate final grounded outputs
-- Cell 8: section header for export
-- Cell 9: write `phase3_hoang_grounded_answer_output.jsonl` and validate schema
-
-## Runtime Entry Points
-
-### CLI
-Command:
+### 2. Build the retrieval index (Phase 2 — Quan San)
 
 ```bash
-python -m aviation_rag.cli --query "engine failure after takeoff" --write-phase1-artifact
+# Full dataset (111K records, ~30 min, recommended for final demo)
+python scripts/build_phase2_san_index.py
+
+# Quick sample for development (5K records, ~3 min)
+python scripts/build_phase2_san_index.py --sample 5000
+
+# Force rebuild
+python scripts/build_phase2_san_index.py --force
 ```
 
-What it does:
-- Runs Phase 1
-- Resolves Phase 2 via San artifact, local FAISS retrieval, or generated mock fallback
-- Runs Phase 3
-- Writes phase-based artifacts
+> **Note:** The index is built once and saved to `data/index_store/`. Subsequent runs load from disk (~1-2s).
 
-### Interactive chat
-Command:
-
-```bash
-python -m aviation_rag.chat_cli
-```
-
-### Streamlit demo UI
-Command:
-
-```bash
-streamlit run streamlit_app.py
-```
-
-Recommended Windows launcher:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_demo.ps1
-```
-
-### HTTP API
-Command:
-
-```bash
-uvicorn aviation_rag.api:app --host 0.0.0.0 --port 8000
-```
-
+### 3. Run the pipeline
 Quick local health check after starting the demo:
 
 ```powershell
@@ -273,19 +165,46 @@ powershell -ExecutionPolicy Bypass -File scripts/check_demo.ps1
 Health:
 
 ```bash
-curl http://localhost:8000/health
+# Streamlit Demo UI (recommended for demo)
+streamlit run app.py
+
+# Single query via CLI
+python -m aviation_rag.cli run "engine failure after takeoff"
+
+# Interactive chat
+python -m aviation_rag.chat_cli
+
+# HTTP API
+uvicorn aviation_rag.api:app --host 0.0.0.0 --port 8000
 ```
 
-Chat:
+### 4. Run tests
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"engine failure after takeoff\",\"strategy\":\"semantic\",\"top_k\":10}"
+python -m pytest tests/ -v
 ```
 
-## Research vs App Mode
+---
 
+## Artifact Contracts
+
+### Phase 1 → Phase 2: `InputAgentOutput`
+
+File: `artifacts/phase1_hoang_intent_routing_output.jsonl`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `query_id` | str | Unique query identifier |
+| `query_raw` | str | Original user query |
+| `query_normalized` | str | Cleaned, jargon-expanded query |
+| `intent` | enum | `Incident_Report` / `Technical_Procedure` / `Metadata_Query` / `Factoid` |
+| `intent_confidence` | float | 0.0–1.0 |
+| `intent_source` | str | `ml` or `heuristic` |
+| `expanded_queries` | list | Intent-aware query expansions |
+| `rewritten_query` | str | Rewritten for retrieval optimization |
+| `retrieval_plan` | object | `{strategy, fallback_strategy, top_k, filters, routing_reason}` |
+
+### Phase 2 → Phase 3: `MiddleAgentOutput`
 ### Research mode
 - Trains `TF-IDF + Logistic Regression` on query-only corpus (seed + training JSONL + augmentation)
 - Gold-set (`data/phase1_intent_gold_labels.jsonl`) is evaluation-only
@@ -319,22 +238,16 @@ set RETRIEVAL_TFIDF_MAX_FEATURES=12000
 set RETRIEVAL_SVD_COMPONENTS=128
 ```
 
-## Function Catalog
+File: `artifacts/phase2_san_retrieval_output.jsonl`
 
-### `aviation_rag/config.py`
-- `Settings`
-  Purpose: central runtime paths and environment configuration.
-  Inputs: `.env` values and project-relative defaults.
-  Outputs: immutable config object used by CLI, API, notebooks, and tests.
-- `ensure_artifact_dirs(settings)`
-  Purpose: create artifact directory if missing.
-  Inputs: `Settings`.
-  Outputs: filesystem side effect only.
-- `configure_tracing_env(settings)`
-  Purpose: normalize LangSmith tracing env for stable local runs.
-  Inputs: `Settings.langsmith_*`.
-  Outputs: process env mutation.
+| Field | Type | Description |
+|-------|------|-------------|
+| `query_id` | str | Same as Phase 1 |
+| `predicted_intent` | enum | Intent label |
+| `topk_docs` | list | Retrieved documents (see below) |
+| `retrieval_diagnostics` | dict | Strategy used, timing, index size |
 
+Each `topk_docs` item (`RetrievedDoc`):
 ### `aviation_rag/schemas.py`
 - `RetrievalPlan`
   Purpose: carry Hoang's routing decision toward Phase 2.
@@ -421,48 +334,17 @@ set RETRIEVAL_SVD_COMPONENTS=128
 - `Phase3HoangGroundedQA.write_output(output, path)`
   Purpose: write Phase 3 artifact row.
 
-### `aviation_rag/graph.py`
-- `RagState`
-  Purpose: state container passed between LangGraph nodes.
-- `build_graph(settings)`
-  Purpose: assemble Hoang Phase 1 -> San contract node -> Hoang Phase 3.
-  Node order:
-  - `phase1_hoang_input_node`
-  - `phase2_san_contract_node`
-  - `phase3_hoang_output_node`
+| Field | Type | Description |
+|-------|------|-------------|
+| `doc_id` | str | e.g., `asrs_1314306` |
+| `chunk_id` | str | e.g., `asrs_1314306#0` |
+| `chunk_text` | str | Retrieved text chunk |
+| `scores` | dict | `{semantic, bm25, hybrid, rrf, final}` |
+| `metadata` | dict | ASRS fields: event_id, aircraft, phase, etc. |
 
-### `aviation_rag/runtime.py`
-- `build_run_state(...)`
-  Purpose: create state payload for CLI, chat CLI, and API entrypoints.
+### Phase 3 Output: `FinalOutput`
 
-### `aviation_rag/cli.py`
-- `build_parser()`
-  Purpose: define command-line interface for end-to-end run.
-- `main()`
-  Purpose: execute LangGraph run and print summary JSON.
-
-### `aviation_rag/chat_cli.py`
-- `_now_iso()`
-  Purpose: timestamp helper.
-- `build_parser()`
-  Purpose: CLI options for interactive chat.
-- `_session_path(settings, session_id)`
-  Purpose: resolve chat log file path.
-- `_print_assistant(result)`
-  Purpose: pretty-print answer + diagnostics.
-- `main()`
-  Purpose: interactive end-to-end phase workflow.
-
-### `aviation_rag/api.py`
-- `ChatRequest`
-  Purpose: input schema for `/v1/chat`.
-- `ChatResponse`
-  Purpose: output schema for `/v1/chat`.
-- `create_app(settings=None)`
-  Purpose: construct FastAPI app with LangGraph runtime.
-
-## Scripts
-
+File: `artifacts/phase3_hoang_grounded_answer_output.jsonl`
 - `scripts/run_phase1_hoang_intent_routing.py`
   Purpose: generate Phase 1 artifact from raw query input.
 - `scripts/validate_phase2_san_contract.py`
@@ -478,74 +360,171 @@ set RETRIEVAL_SVD_COMPONENTS=128
 - `scripts/check_demo.ps1`
   Purpose: verify local API and UI health endpoints quickly.
 
-## San Handoff Contract
+| Field | Type | Description |
+|-------|------|-------------|
+| `query_id` | str | Same as Phase 1 |
+| `answer` | str | Grounded answer from LLM |
+| `citations` | list | `[{doc_id, chunk_id, reason}]` |
+| `hallucination_risk` | float | 0.0–1.0 |
+| `grounding_report` | dict | Overlap metrics |
 
-San only needs these files from Hoang:
+---
 
-- `artifacts/phase1_hoang_intent_routing_output.jsonl`
-- `README.md`
-- `aviation_rag/schemas.py`
+## Intent Routing Policy
 
-San must return:
+Phase 1 classifies queries into 4 intents and routes to the appropriate retrieval strategy:
 
-- `artifacts/phase2_san_retrieval_output.jsonl`
+| Intent | Strategy | Fallback | Routing Reason |
+|--------|----------|----------|----------------|
+| `Incident_Report` | `semantic` | `hybrid` | Narrative queries → semantic similarity over safety reports |
+| `Technical_Procedure` | `bm25` | `hybrid` | Procedure queries → keyword-heavy checklist/manual retrieval |
+| `Metadata_Query` | `metadata_first` | `bm25` | Metadata queries → filter structured fields first |
+| `Factoid` | `semantic` | `hybrid` | Factoid queries → concise semantic lookup |
 
-San output must contain:
-- same `query_id` from Hoang Phase 1
-- `predicted_intent`
-- `topk_docs`
-- `retrieval_diagnostics`
+---
 
-LangGraph in this repo will consume San's output automatically through:
-- `aviation_rag/phase2_san_contract_adapter.py`
+## Phase 2 — Semantic Retrieval Details (Quan San)
+
+### Retrieval Strategies
+
+| Strategy | Method | Performance |
+|----------|--------|-------------|
+| **semantic** | FAISS `IndexFlatIP` cosine search on L2-normalized embeddings | ~11–15ms |
+| **bm25** | BM25Okapi keyword scoring, normalized to [0,1] | ~30ms |
+| **hybrid** | Reciprocal Rank Fusion (k=60), weighted 0.7 semantic + 0.3 BM25 | ~40ms |
+| **metadata_first** | Filter metadata → semantic search on subset → fallback if <top_k matches | ~47ms |
+
+### Technical Specifications
+
+| Spec | Value |
+|------|-------|
+| Embedding model | `all-MiniLM-L6-v2` (Sentence-Transformers) |
+| Dimension | 384 |
+| Normalization | L2 (unit vectors for cosine via inner product) |
+| FAISS index | `IndexFlatIP` (exact search) |
+| Chunking | 512 words max, 50 words overlap, sentence-boundary aware |
+| Data source | ASRS Clean Dataset (111,492 records, 63 columns) |
+
+### Fallback Chain
+
+The Phase 2 adapter resolves output with graceful fallback:
+
+1. **Cached output** → return if `query_id` already in artifact file
+2. **Real retrieval** → FAISS/BM25 search if index is built ✅
+3. **Sample artifact** → static sample JSONL if available
+4. **Mock fallback** → generated placeholder (pipeline never crashes)
+
+---
+
+## Research vs App Mode
+
+### Research mode
+- Uses local dataset in `data/` for ML intent classification
+- Useful for notebook experiments
+
+### App runtime mode
+- Works without dataset (heuristic fallback)
+- Works without retrieval index (mock fallback)
+
+```bash
+# Environment variable
+set INPUT_INTENT_MODE=heuristic   # default, no dataset needed
+set INPUT_INTENT_MODE=auto        # ML when possible, else heuristic
+set INPUT_INTENT_MODE=ml          # force ML (needs dataset)
+```
+
+---
 
 ## LangSmith / LangGraph
 
-- `LangGraph` is the local orchestration engine in code.
-- `LangSmith` is optional observability.
-- Local runs should stay stable with tracing off.
-
-Recommended local default:
+LangGraph is the local orchestration engine. LangSmith is optional observability.
 
 ```bash
+# Default (tracing off)
 set LANGSMITH_TRACING=false
-set LANGCHAIN_TRACING_V2=false
-```
 
-Enable tracing only when needed:
-
-```bash
+# Enable tracing
 set LANGSMITH_TRACING=true
-set LANGCHAIN_TRACING_V2=true
 set LANGSMITH_API_KEY=...
 set LANGSMITH_PROJECT=aviation-rag-team
 ```
 
-## Minimal Files a Future Agent Should Read First
+---
 
-If a future agent joins this project, read these files first and only then expand outward:
+## Function Catalog
 
-1. `README.md`
-2. `aviation_rag/graph.py`
-3. `aviation_rag/phase1_hoang_intent_routing.py`
-4. `aviation_rag/phase2_san_faiss_retrieval.py`
-5. `aviation_rag/phase2_san_contract_adapter.py`
-6. `aviation_rag/phase3_hoang_grounded_qa.py`
-7. `aviation_rag/schemas.py`
+### `aviation_rag/config.py`
+- `Settings` — Central runtime paths and environment configuration
+- `ensure_artifact_dirs()` — Create artifact directory
+- `configure_tracing_env()` — Normalize LangSmith env
 
-That is enough to understand:
-- ownership
-- data flow
-- notebook to app handoff
-- artifact contracts
-- LangGraph orchestration
+### `aviation_rag/schemas.py`
+- `RetrievalPlan` — Routing decision from Phase 1
+- `InputAgentOutput` — Contract: Phase 1 → Phase 2
+- `RetrievedDoc` — Single retrieved chunk
+- `MiddleAgentOutput` — Contract: Phase 2 → Phase 3
+- `Citation` — Citation entry in final answer
+- `FinalOutput` — Final grounded answer
+
+### `aviation_rag/phase1_hoang_intent_routing.py` (Hoang)
+- `Phase1HoangIntentRouting` — Intent classification + routing
+- `normalize_text()`, `heuristic_intent()`, `IntentModel`
+
+### `aviation_rag/retrieval/engine.py` (San)
+- `RetrievalEngine` — Core engine with 4 strategies
+- `retrieve(input_row)` — Main entry: `InputAgentOutput` → `MiddleAgentOutput`
+- `_search_semantic()`, `_search_bm25()`, `_search_hybrid()`, `_search_metadata_first()`
+
+### `aviation_rag/retrieval/indexer.py` (San)
+- `build_and_save_index()` — Full build: CSV → preprocess → embed → FAISS + BM25 → disk
+- `load_index()` — Load from disk
+- `index_exists()` — Check existence
+
+### `aviation_rag/retrieval/preprocess.py` (San)
+- `normalize_text()` — Lowercase, URL removal, whitespace
+- `combine_text_fields()` — Merge [SUMMARY] + [REPORT 1] + [REPORT 2]
+- `chunk_text()` — Sentence-boundary-aware chunking
+- `load_and_preprocess()` — Full CSV → (chunks, metadata) pipeline
+
+### `aviation_rag/phase2_san_contract_adapter.py` (San)
+- `Phase2SanContractAdapter` — Adapter with fallback chain
+- `resolve_output()` — cached → real engine → sample → mock
+- `write_output()` — Save to JSONL
+
+### `aviation_rag/phase3_hoang_grounded_qa.py` (Hoang)
+- `Phase3HoangGroundedQA` — Grounded answer generation
+- `generate()` — LLM answer + citations + hallucination check
+
+### `aviation_rag/graph.py`
+- `RagState` — LangGraph state container
+- `build_graph()` — Assemble Phase 1 → 2 → 3
+
+---
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/run_phase1_hoang_intent_routing.py` | Generate Phase 1 artifact |
+| `scripts/build_phase2_san_index.py` | Build FAISS + BM25 index (San) |
+| `scripts/validate_phase2_san_contract.py` | Validate Phase 2 artifact schema |
+| `scripts/evaluate_phase3_hoang_grounding.py` | Evaluate grounding quality |
+
+---
 
 ## Test Command
 
 ```bash
-python -m unittest discover -s tests -q
+python -m pytest tests/ -v
 ```
 
-Why keep `tests/`:
-- This folder protects the contracts and runtime behavior during refactors.
-- It is the fastest way to catch breakage in API startup, LangGraph flow, retrieval fallback, and schema compatibility.
+---
+
+## Minimal Files to Read First
+
+1. `README.md`
+2. `aviation_rag/schemas.py` — data contracts
+3. `aviation_rag/graph.py` — pipeline orchestration
+4. `aviation_rag/phase1_hoang_intent_routing.py` — Phase 1
+5. `aviation_rag/retrieval/engine.py` — Phase 2
+6. `aviation_rag/phase3_hoang_grounded_qa.py` — Phase 3

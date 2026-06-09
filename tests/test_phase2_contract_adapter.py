@@ -27,7 +27,7 @@ class Phase2ContractAdapterTests(unittest.TestCase):
             self.assertGreater(len(phase2_output.topk_docs), 0)
             self.assertEqual(
                 phase2_output.retrieval_diagnostics.get("contract_owner"),
-                "Quang San",
+                "Quan San",
             )
 
 
