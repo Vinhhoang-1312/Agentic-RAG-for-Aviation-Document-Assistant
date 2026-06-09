@@ -32,6 +32,8 @@ Default local URLs:
 Important runtime note:
 - The first API or UI query can be slower because the LangGraph runtime and local retrieval index are initialized lazily on first real request.
 - If `LANGSMITH_TRACING=true` and the machine cannot reach LangSmith, the app still works locally but may log tracing connection errors.
+- Phase 3 uses OpenRouter as the Route LLM provider. Keep `OPENROUTER_API_KEY` only in local `.env`; `.env` is ignored by Git.
+- `OPENROUTER_MODELS` is an ordered failover queue. Each model is tried once, retried once on failure, then skipped for the rest of that request.
 
 `Quang San` will still be able to plug in his own Phase 2 artifact.  
 This repo now supports both:
@@ -181,8 +183,10 @@ Default routing policy:
 - `Factoid -> semantic`, fallback `hybrid`
 
 Important note:
-- `Factoid` is mainly handled by runtime heuristics.
-- Research mode may train on local dataset for the other labels when data is available.
+- Phase 1 trains `TF-IDF + Logistic Regression` on **query-like text only** (seed + `data/phase1_intent_training_queries.jsonl` + augmentation).
+- ASRS CSV narratives are **not** used as intent training labels anymore (they caused train/infer mismatch).
+- Gold-set queries in `data/phase1_intent_gold_labels.jsonl` are held out for evaluation only.
+- Default runtime mode is `auto`: ML when confident/agrees with heuristic, otherwise heuristic fallback.
 
 ## Notebook Map
 
@@ -283,27 +287,29 @@ curl -X POST http://localhost:8000/v1/chat \
 ## Research vs App Mode
 
 ### Research mode
-- Can use local dataset in `data/`
-- Can train `TF-IDF + Logistic Regression` for intent classification
+- Trains `TF-IDF + Logistic Regression` on query-only corpus (seed + training JSONL + augmentation)
+- Gold-set (`data/phase1_intent_gold_labels.jsonl`) is evaluation-only
 - Useful for notebook experiments
 
 ### App runtime mode
-- Works without requiring dataset training at request time
-- Uses heuristic fallback for intent classification when needed
+- Default intent routing: `auto` (ML + heuristic fallback)
+- Uses saved model in `artifacts/phase1_intent_model/` (auto-retrains if stale ASRS-narrative model detected)
 - Uses local FAISS retrieval over the ASRS dataset when local data is available
 - Still works without San retrieval engine by falling back to the Phase 2 contract adapter
 - Uses lazy FastAPI runtime initialization so `/health` responds quickly and the heavier graph setup happens only on first real chat request
 
-Key environment variable:
+Key environment variables:
 
 ```bash
-set INPUT_INTENT_MODE=heuristic
+set INPUT_INTENT_MODE=auto
+set PHASE1_ML_CONFIDENCE_THRESHOLD=0.55
+set PHASE1_RETRAIN=false
 ```
 
 Modes:
-- `heuristic`: default app mode, query-only and no dataset dependency at runtime
-- `auto`: use ML when possible, else heuristic
-- `ml`: force dataset-backed ML path
+- `auto`: recommended; ML when confident/agrees with heuristic, else heuristic
+- `ml`: always use TF-IDF + Logistic Regression
+- `heuristic`: rule-based routing only (no ML at inference)
 
 Retrieval environment variables:
 
@@ -365,13 +371,13 @@ set RETRIEVAL_SVD_COMPONENTS=128
 - `tokenize(text)`
   Purpose: token extraction helper.
 - `heuristic_intent(normalized_query)`
-  Purpose: query-only intent fallback, including `Factoid`.
+  Purpose: legacy keyword helper retained for compatibility; not the main runtime classifier.
 - `IntentModel.predict(text)`
   Purpose: return predicted label and confidence from TF-IDF + Logistic Regression.
-- `Phase1HoangIntentRouting._maybe_train_intent_model(data_path)`
-  Purpose: optional ML training path for research mode.
+- `Phase1HoangIntentRouting._train_intent_model(data_path)`
+  Purpose: train the required TF-IDF + Logistic Regression classifier from seed examples plus local ASRS weak labels.
 - `Phase1HoangIntentRouting.predict_intent(query_raw)`
-  Purpose: choose final intent, confidence, and source (`ml` or `heuristic`).
+  Purpose: predict final intent, confidence, and source from the sklearn classifier.
 - `Phase1HoangIntentRouting.expand_query(normalized_query, intent)`
   Purpose: build intent-aware query expansion set.
 - `Phase1HoangIntentRouting.rewrite_query(query_raw, intent)`
@@ -402,8 +408,10 @@ set RETRIEVAL_SVD_COMPONENTS=128
   Purpose: token overlap helper for grounding metrics.
 - `Phase3HoangGroundedQA._build_context(middle_output)`
   Purpose: turn Phase 2 rows into LLM context block.
-- `Phase3HoangGroundedQA._call_openai(question, context_block, doc_ids)`
-  Purpose: grounded answer generation with OpenAI.
+- `Phase3HoangGroundedQA._call_route_llm(question, context_block, doc_ids)`
+  Purpose: grounded answer generation through OpenRouter model queue.
+- `Phase3HoangGroundedQA._call_route_llm_model(...)`
+  Purpose: call one OpenRouter model; Phase 3 retries once, then moves to the next model.
 - `Phase3HoangGroundedQA._fallback_answer(question, middle_output)`
   Purpose: offline/local fallback answer.
 - `Phase3HoangGroundedQA._grounding_metrics(answer, contexts)`

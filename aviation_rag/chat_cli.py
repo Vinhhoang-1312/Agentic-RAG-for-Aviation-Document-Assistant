@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-local-fallback",
         action="store_true",
-        help="Disable phase 3 fallback when OpenAI is unavailable.",
+        help="Disable phase 3 fallback when Route LLM/OpenRouter is unavailable.",
     )
     return parser
 

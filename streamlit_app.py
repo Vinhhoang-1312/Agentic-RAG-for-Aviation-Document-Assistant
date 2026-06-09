@@ -3,6 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
+import time
+import traceback
+import uuid
 from dataclasses import replace
 from html import escape
 from pathlib import Path
@@ -18,7 +22,9 @@ except ModuleNotFoundError:
     px = None
     go = None
 
+from aviation_rag.gold_ui import gold_grounding_match, gold_intent_match, gold_retrieval_match
 from aviation_rag.config import Settings, configure_tracing_env, ensure_artifact_dirs
+from aviation_rag.cancel import AnalysisCancelled
 from aviation_rag.graph import build_graph
 from aviation_rag.runtime import build_run_state
 from aviation_rag.streamlit_bootstrap import ensure_streamlit_runtime
@@ -33,7 +39,8 @@ SAMPLE_QUERIES = [
 ]
 
 STRATEGIES = ["hybrid", "semantic", "bm25", "metadata_first", "hybrid_rrf"]
-RUN_MODES = ["Fast local", "Full dense/OpenAI"]
+INTENT_MODES = ["auto", "ml", "heuristic"]
+RUN_MODES = ["Fast local", "Full dense/Route LLM"]
 BACKGROUND_IMAGE_PATH = Path(__file__).parent / "assets" / "aviation-safety-bg.png"
 
 SOURCE_NOTES = [
@@ -41,6 +48,11 @@ SOURCE_NOTES = [
     "Hybrid retrieval matters because ASRS reports contain both exact terms such as MEL and narrative language about incidents.",
     "The UI exposes retrieval scores and citations so a reviewer can inspect why an answer was produced.",
 ]
+
+_ANALYZE_JOBS: dict[str, dict[str, Any]] = {}
+_ANALYZE_JOBS_LOCK = threading.Lock()
+_RUNTIME_CACHE: dict[tuple[str, str], tuple[Settings, object]] = {}
+_RUNTIME_CACHE_LOCK = threading.Lock()
 
 
 def asset_data_uri(path: Path) -> str:
@@ -62,8 +74,12 @@ def sync_query_from_preset() -> None:
     st.session_state["safety_query"] = st.session_state.get("scenario_preset", SAMPLE_QUERIES[0])
 
 
-@st.cache_resource(show_spinner=False)
 def get_runtime(intent_mode: str, run_mode: str) -> tuple[Settings, object]:
+    cache_key = (intent_mode, run_mode)
+    with _RUNTIME_CACHE_LOCK:
+        if cache_key in _RUNTIME_CACHE:
+            return _RUNTIME_CACHE[cache_key]
+
     base_settings = Settings()
     streamlit_tracing = os.getenv("STREAMLIT_LANGSMITH_TRACING", "false")
     if run_mode == "Fast local":
@@ -84,7 +100,10 @@ def get_runtime(intent_mode: str, run_mode: str) -> tuple[Settings, object]:
         )
     ensure_artifact_dirs(settings)
     configure_tracing_env(settings)
-    return settings, build_graph(settings)
+    runtime = (settings, build_graph(settings))
+    with _RUNTIME_CACHE_LOCK:
+        _RUNTIME_CACHE[cache_key] = runtime
+    return runtime
 
 
 def run_query(
@@ -96,6 +115,7 @@ def run_query(
     intent_mode: str,
     run_mode: str,
     write_artifacts: bool,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     settings, graph = get_runtime(intent_mode, run_mode)
     state = build_run_state(
@@ -108,8 +128,108 @@ def run_query(
         write_phase1_artifact=write_artifacts,
         write_phase2_artifact=write_artifacts,
         write_phase3_artifact=write_artifacts,
+        cancel_event=cancel_event,
     )
     return graph.invoke(state)
+
+
+def _job_snapshot(job_id: str | None) -> dict[str, Any] | None:
+    if not job_id:
+        return None
+    with _ANALYZE_JOBS_LOCK:
+        job = _ANALYZE_JOBS.get(job_id)
+        if not job:
+            return None
+        return dict(job)
+
+
+def _update_job(job_id: str, **updates: Any) -> None:
+    with _ANALYZE_JOBS_LOCK:
+        if job_id in _ANALYZE_JOBS:
+            _ANALYZE_JOBS[job_id].update(updates)
+
+
+def _cancel_job(job_id: str | None) -> None:
+    if not job_id:
+        return
+    with _ANALYZE_JOBS_LOCK:
+        job = _ANALYZE_JOBS.get(job_id)
+        if not job:
+            return
+        cancel_event = job.get("cancel_event")
+        if hasattr(cancel_event, "set"):
+            cancel_event.set()
+        job["status"] = "cancelling"
+        job["message"] = "Cancel requested. Waiting for the current phase/model call to stop safely."
+
+
+def _start_analyze_job(config: dict[str, Any]) -> str:
+    job_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+    job: dict[str, Any] = {
+        "job_id": job_id,
+        "status": "running",
+        "message": "Running intent routing, retrieval, and grounded answer generation...",
+        "config": dict(config),
+        "result": None,
+        "error": None,
+        "traceback": None,
+        "cancel_event": cancel_event,
+        "started_at": time.time(),
+        "finished_at": None,
+    }
+
+    def worker() -> None:
+        try:
+            result = run_query(
+                query=str(config["query"]),
+                top_k=int(config["top_k"]),
+                strategy=str(config["strategy"]),
+                allow_local_fallback=bool(config["allow_local_fallback"]),
+                intent_mode=str(config["intent_mode"]),
+                run_mode=str(config["run_mode"]),
+                write_artifacts=bool(config["write_artifacts"]),
+                cancel_event=cancel_event,
+            )
+            if cancel_event.is_set():
+                _update_job(
+                    job_id,
+                    status="cancelled",
+                    message="Analyze run was cancelled. Late result was discarded.",
+                    finished_at=time.time(),
+                )
+            else:
+                _update_job(
+                    job_id,
+                    status="done",
+                    result=result,
+                    message="Analyze run completed.",
+                    finished_at=time.time(),
+                )
+        except AnalysisCancelled as exc:
+            _update_job(
+                job_id,
+                status="cancelled",
+                error=str(exc),
+                message="Analyze run was cancelled.",
+                finished_at=time.time(),
+            )
+        except Exception as exc:
+            _update_job(
+                job_id,
+                status="error",
+                error=str(exc),
+                traceback=traceback.format_exc(limit=8),
+                message="Analyze run failed.",
+                finished_at=time.time(),
+            )
+
+    thread = threading.Thread(target=worker, name=f"streamlit-analyze-{job_id[:8]}", daemon=True)
+    job["thread"] = thread
+    with _ANALYZE_JOBS_LOCK:
+        _ANALYZE_JOBS[job_id] = job
+    thread.start()
+    return job_id
 
 
 def score_table(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -279,7 +399,7 @@ def show_warnings(diagnostics: dict[str, Any], run_mode: str) -> None:
             render_html(
                 '<div class="notice-card notice-info">'
                 "<strong>Fast local mode:</strong> using TF-IDF/SVD + FAISS fallback so the demo returns quickly "
-                "without downloading MiniLM. Switch to Full dense/OpenAI when you want the full embedding pipeline."
+                "without downloading MiniLM. Switch to Full dense/Route LLM when you want the full embedding and OpenRouter generation pipeline."
                 "</div>"
             )
         else:
@@ -318,21 +438,44 @@ def render_phase_cards() -> None:
     )
 
 
-def render_run_result(result: dict[str, Any], run_mode: str) -> None:
+def render_run_result(result: dict[str, Any], run_mode: str, *, app_settings: Settings | None = None) -> None:
     diagnostics = result.get("retrieval_diagnostics", {}) or {}
+    grounding_report = result.get("grounding_report", {}) or {}
     top_docs = result.get("topk_docs", []) or []
     risk = result.get("hallucination_risk")
+    route_attempts = grounding_report.get("route_llm_attempts", []) or []
     st.markdown("### Run result")
     show_warnings(diagnostics, run_mode)
+    retrieval_plan = result.get("retrieval_plan", {}) or {}
     render_card_grid(
         [
             {"label": "Intent", "value": result.get("intent", "unknown"), "note": "Phase 1 route"},
-            {"label": "Intent source", "value": result.get("intent_source", "unknown"), "note": "heuristic / ML"},
+            {
+                "label": "Intent source",
+                "value": result.get("intent_source", "unknown"),
+                "note": "TF-IDF + Logistic Regression",
+            },
+            {
+                "label": "Confidence",
+                "value": f"{float(result.get('intent_confidence', 0.0)):.3f}",
+                "note": "Phase 1 classifier",
+            },
+            {
+                "label": "Strategy",
+                "value": retrieval_plan.get("strategy", "unknown"),
+                "note": "retrieval fusion",
+            },
             {"label": "Top docs", "value": len(top_docs), "note": "retrieved evidence"},
             {
                 "label": "Risk proxy",
                 "value": f"{float(risk):.3f}" if risk is not None else "n/a",
                 "note": "lower is better",
+            },
+            {
+                "label": "Route LLM",
+                "value": grounding_report.get("route_llm_model") or "local fallback",
+                "note": f"{len(route_attempts)} attempt(s)",
+                "max_chars": 42,
             },
         ],
         css_class="result-grid",
@@ -344,6 +487,72 @@ def render_run_result(result: dict[str, Any], run_mode: str) -> None:
     render_citation_cards(result.get("citations", []) or [])
     with st.expander("Technical diagnostics JSON", expanded=False):
         st.json(diagnostics)
+
+    settings = app_settings or Settings()
+    phase1_gold_path = settings.phase1_gold_labels_path
+    if phase1_gold_path.exists():
+        intent_match = gold_intent_match(result, phase1_gold_path)
+        if intent_match:
+            st.markdown("#### Gold-set intent check (Phase 1)")
+            st.caption(f"Human labels from `{phase1_gold_path}`")
+            render_card_grid(
+                [
+                    {
+                        "label": "Intent correct",
+                        "value": "yes" if intent_match.get("correct") else "no",
+                        "note": f"expected {intent_match.get('expected_intent')}",
+                    },
+                    {
+                        "label": "Predicted",
+                        "value": intent_match.get("predicted_intent", "n/a"),
+                        "note": "Phase 1 ML/heuristic",
+                    },
+                    {
+                        "label": "Strategy",
+                        "value": intent_match.get("actual_strategy", "n/a"),
+                        "note": f"expected {intent_match.get('expected_strategy', 'n/a')}",
+                    },
+                ],
+                css_class="diag-grid",
+            )
+
+    phase3_gold_path = settings.phase3_gold_labels_path
+    if phase3_gold_path.exists():
+        grounding_match = gold_grounding_match(result, phase3_gold_path)
+        if grounding_match:
+            checks = grounding_match.get("checks", {})
+            passed = grounding_match.get("passed")
+            st.markdown("#### Gold-set grounding check (Phase 3)")
+            st.caption(f"Criteria from `{phase3_gold_path}`")
+            render_card_grid(
+                [
+                    {"label": "Gold pass", "value": "yes" if passed else "no", "note": "Phase 3 criteria"},
+                    {"label": "Non-empty answer", "value": "yes" if checks.get("non_empty_answer") else "no", "note": "gold rule"},
+                    {"label": "Min citations", "value": "yes" if checks.get("min_citations") else "no", "note": "gold rule"},
+                    {"label": "Max risk", "value": "yes" if checks.get("max_risk") else "no", "note": "gold rule"},
+                ],
+                css_class="diag-grid",
+            )
+        else:
+            st.caption("Query hiện không nằm trong Phase 3 gold-set demo (4 preset queries).")
+
+    phase2_gold_path = settings.phase2_gold_labels_path
+    if phase2_gold_path.exists():
+        retrieval_match = gold_retrieval_match(result, phase2_gold_path)
+        if retrieval_match:
+            st.markdown("#### Gold-set retrieval check (Phase 2)")
+            st.caption(f"Human relevant doc IDs from `{phase2_gold_path}`")
+            render_card_grid(
+                [
+                    {"label": "Recall@K", "value": retrieval_match.get("recall_at_k"), "note": f"k={retrieval_match.get('k')}"},
+                    {"label": "Precision@K", "value": retrieval_match.get("precision_at_k"), "note": "gold docs in top-k"},
+                    {"label": "MRR", "value": retrieval_match.get("mrr"), "note": "first relevant rank"},
+                    {"label": "Gold pass", "value": "yes" if retrieval_match.get("passed") else "no", "note": "min recall threshold"},
+                ],
+                css_class="diag-grid",
+            )
+        else:
+            st.caption("Query hiện không nằm trong Phase 2 retrieval gold-set (8 preset queries).")
 
 
 st.set_page_config(
@@ -628,7 +837,7 @@ st.markdown(
         margin: 0.75rem 0 1rem 0;
     }}
     .result-grid {{
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     }}
     .diag-grid {{
         grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -748,31 +957,41 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-settings_preview = Settings()
+DEFAULT_LAST_CONFIG = {
+    "query": SAMPLE_QUERIES[0],
+    "top_k": 5,
+    "strategy": "hybrid",
+    "intent_mode": "auto",
+    "run_mode": "Fast local",
+    "allow_local_fallback": True,
+    "write_artifacts": True,
+}
+last_config = st.session_state.get("last_config", DEFAULT_LAST_CONFIG)
+active_config = last_config
+if "run_mode" not in st.session_state:
+    st.session_state["run_mode"] = str(last_config.get("run_mode", "Fast local"))
+active_run_mode = str(st.session_state.get("run_mode", "Fast local"))
+if active_run_mode not in RUN_MODES:
+    active_run_mode = "Fast local"
+runtime_settings, _runtime_graph = get_runtime(
+    str(active_config.get("intent_mode", "auto")),
+    active_run_mode,
+)
 st.markdown(
     f"""
     <div class="status-strip">
-      <div class="status-chip"><strong>Dataset</strong>{settings_preview.data_path.name}</div>
-      <div class="status-chip"><strong>Embedding</strong>{settings_preview.phase2_embedding_model}</div>
-      <div class="status-chip"><strong>Index</strong>{settings_preview.phase2_index_dir}</div>
+      <div class="status-chip"><strong>Dataset</strong>{runtime_settings.data_path.name}</div>
+      <div class="status-chip"><strong>Embedding</strong>{runtime_settings.phase2_embedding_model}</div>
+      <div class="status-chip"><strong>Index</strong>{runtime_settings.phase2_index_dir}</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 result = st.session_state.get("last_result")
-last_config = st.session_state.get(
-    "last_config",
-    {
-        "query": SAMPLE_QUERIES[0],
-        "top_k": 5,
-        "strategy": "hybrid",
-        "intent_mode": "heuristic",
-        "run_mode": "Fast local",
-        "allow_local_fallback": True,
-        "write_artifacts": True,
-    },
-)
+if "last_config" not in st.session_state:
+    st.session_state["last_config"] = DEFAULT_LAST_CONFIG
+last_config = st.session_state.get("last_config", DEFAULT_LAST_CONFIG)
 if "safety_query" not in st.session_state:
     st.session_state["safety_query"] = str(last_config.get("query") or SAMPLE_QUERIES[0])
 if "scenario_preset" not in st.session_state:
@@ -798,28 +1017,48 @@ with tab_overview:
             on_change=sync_query_from_preset,
         )
     with mode_col:
+        last_run_mode = str(last_config.get("run_mode", "Fast local"))
+        if last_run_mode not in RUN_MODES:
+            last_run_mode = "Fast local"
         run_mode = st.selectbox(
             "Run mode",
             RUN_MODES,
-            index=RUN_MODES.index(str(last_config.get("run_mode", "Fast local"))),
+            index=RUN_MODES.index(last_run_mode),
+            key="run_mode",
+            help="Fast local dùng TF-IDF/SVD fallback và local answer để demo nhanh. Full dense/Route LLM dùng MiniLM dense retrieval và Route LLM/OpenRouter nếu network/API sẵn sàng.",
         )
     query = st.text_area("Safety query", key="safety_query", height=86)
     control_1, control_2, control_3 = st.columns([1, 1, 1])
     with control_1:
-        intent_values = ["heuristic", "auto", "ml"]
+        last_intent_mode = str(last_config.get("intent_mode", "auto"))
+        if last_intent_mode not in INTENT_MODES:
+            last_intent_mode = "auto"
         intent_mode = st.selectbox(
-            "Intent mode",
-            intent_values,
-            index=intent_values.index(str(last_config.get("intent_mode", "heuristic"))),
+            "Intent routing",
+            INTENT_MODES,
+            index=INTENT_MODES.index(last_intent_mode),
+            format_func=lambda value: {
+                "auto": "Auto (ML + heuristic fallback)",
+                "ml": "ML only (TF-IDF + Logistic Regression)",
+                "heuristic": "Heuristic rules only",
+            }[value],
+            help="Auto: dùng ML khi confidence đủ cao và khớp heuristic; nếu ML yếu hoặc mâu thuẫn thì fallback heuristic.",
         )
     with control_2:
         strategy = st.selectbox(
             "Retrieval strategy",
             STRATEGIES,
             index=STRATEGIES.index(str(last_config.get("strategy", "hybrid"))),
+            help="Cách Phase 2 xếp hạng evidence: BM25 keyword, semantic vector, metadata-first, hybrid weighted, hoặc RRF.",
         )
     with control_3:
-        top_k = st.slider("Top K", min_value=1, max_value=10, value=int(last_config.get("top_k", 5)))
+        top_k = st.slider(
+            "Top K",
+            min_value=1,
+            max_value=10,
+            value=int(last_config.get("top_k", 5)),
+            help="Số lượng ASRS documents được lấy ra làm evidence. Top K=3 trả 3 tài liệu; Top K=5 trả 5 tài liệu.",
+        )
     c_toggle_1, c_toggle_2 = st.columns(2)
     with c_toggle_1:
         allow_local_fallback = c_toggle_1.toggle(
@@ -828,7 +1067,6 @@ with tab_overview:
         )
     with c_toggle_2:
         write_artifacts = c_toggle_2.toggle("Artifacts", value=bool(last_config.get("write_artifacts", True)))
-    run = st.button("Analyze Safety Query", type="primary", width="stretch")
     current_config = {
         "query": query,
         "top_k": top_k,
@@ -838,20 +1076,77 @@ with tab_overview:
         "allow_local_fallback": allow_local_fallback,
         "write_artifacts": write_artifacts,
     }
+
+    active_job_id = st.session_state.get("active_analyze_job_id")
+    active_job = _job_snapshot(active_job_id)
+    active_status = str((active_job or {}).get("status", ""))
+    job_running = active_status in {"running", "cancelling"}
+    run_col, cancel_col, refresh_col = st.columns([1.5, 1, 1])
+    with run_col:
+        run = st.button(
+            "Analyze Safety Query",
+            type="primary",
+            width="stretch",
+            disabled=job_running,
+        )
+    with cancel_col:
+        cancel_clicked = st.button(
+            "Cancel Analyze",
+            width="stretch",
+            disabled=not job_running or active_status == "cancelling",
+        )
+    with refresh_col:
+        refresh_clicked = st.button("Refresh Status", width="stretch", disabled=not bool(active_job))
+
     if run:
         st.session_state["last_config"] = current_config
-        with st.spinner("Running intent routing, retrieval, and grounded answer generation..."):
-            st.session_state["last_result"] = run_query(
-                query=query,
-                top_k=top_k,
-                strategy=strategy,
-                allow_local_fallback=allow_local_fallback,
-                intent_mode=intent_mode,
-                run_mode=run_mode,
-                write_artifacts=write_artifacts,
-            )
-        result = st.session_state.get("last_result")
+        st.session_state["active_analyze_job_id"] = _start_analyze_job(current_config)
+        st.rerun()
 
+    if cancel_clicked:
+        _cancel_job(active_job_id)
+        st.rerun()
+
+    if refresh_clicked:
+        st.rerun()
+
+    active_job_id = st.session_state.get("active_analyze_job_id")
+    active_job = _job_snapshot(active_job_id)
+    if active_job:
+        status = str(active_job.get("status", "unknown"))
+        elapsed = max(0.0, time.time() - float(active_job.get("started_at") or time.time()))
+        if status in {"running", "cancelling"}:
+            st.info(f"{active_job.get('message', 'Analyze is running.')} Elapsed: {elapsed:.1f}s")
+            st.caption("Cancel stops before/after each pipeline phase and before the next Route LLM retry/model.")
+            if elapsed > 120:
+                st.warning(
+                    "Full dense/Route LLM mode can take several minutes on first run while MiniLM loads and the index builds."
+                )
+            time.sleep(1.0)
+            st.rerun()
+        elif status == "done":
+            st.session_state["last_result"] = active_job.get("result")
+            st.session_state["last_config"] = active_job.get("config", current_config)
+            with _ANALYZE_JOBS_LOCK:
+                _ANALYZE_JOBS.pop(str(active_job_id), None)
+            st.session_state.pop("active_analyze_job_id", None)
+            st.success(f"Analyze completed in {elapsed:.1f}s.")
+            st.rerun()
+        elif status == "cancelled":
+            with _ANALYZE_JOBS_LOCK:
+                _ANALYZE_JOBS.pop(str(active_job_id), None)
+            st.session_state.pop("active_analyze_job_id", None)
+            st.warning("Analyze cancelled. No new result was applied.")
+        elif status == "error":
+            with _ANALYZE_JOBS_LOCK:
+                _ANALYZE_JOBS.pop(str(active_job_id), None)
+            st.session_state.pop("active_analyze_job_id", None)
+            st.error(f"Analyze failed: {active_job.get('error', 'unknown error')}")
+            if active_job.get("traceback"):
+                with st.expander("Error traceback"):
+                    st.code(str(active_job["traceback"]), language="text")
+
+    result = st.session_state.get("last_result")
     saved_config = st.session_state.get("last_config", {}) or {}
     result_is_stale = bool(result) and any(
         current_config.get(key) != saved_config.get(key)
@@ -862,7 +1157,7 @@ with tab_overview:
             st.info("Inputs changed. Click Analyze Safety Query to refresh the answer and evidence.")
         else:
             result_run_mode = str(saved_config.get("run_mode", run_mode))
-            render_run_result(result, result_run_mode)
+            render_run_result(result, result_run_mode, app_settings=runtime_settings)
     else:
         st.info("Run the query above to inspect answer, routing, retrieval, and artifacts.")
 
@@ -1013,14 +1308,20 @@ with tab_evidence:
             )
 
 with tab_research:
+    active_config = st.session_state.get("last_config", last_config)
+    research_settings, _research_graph = get_runtime(
+        str(active_config.get("intent_mode", "auto")),
+        str(active_config.get("run_mode", active_run_mode)),
+    )
     st.subheader("Notebook to app handoff")
     st.write(
-        "The two notebooks are research artifacts. The app operationalizes them: "
-        "Phase 1 notebook explores intent routing; Phase 3 notebook explores grounded answer generation. "
-        "The new Phase 2 modules now complete the missing retrieval research story."
+        "The notebooks are research artifacts. The app operationalizes them: "
+        "Phase 1 notebook explores intent routing; Phase 2 notebook explores retrieval; "
+        "Phase 3 notebook explores grounded answer generation."
     )
     st.markdown("""
     - `notebooks/phase1_hoang_intent_routing_research.ipynb`: intent labels, query normalization, expansion, routing policy.
+    - `notebooks/phase2_san_semantic_retrieval_research.ipynb`: corpus chunking, embedding/index build, strategy comparison.
     - `aviation_rag/phase2_indexing.py`: shared corpus preparation, chunking, dedupe, metadata extraction.
     - `aviation_rag/phase2_retrieval_engine.py`: MiniLM/FAISS semantic retrieval, BM25, metadata filters, hybrid/RRF fusion.
     - `notebooks/phase3_hoang_grounded_output_research.ipynb`: grounded QA, citations, hallucination-risk proxy.
@@ -1039,16 +1340,135 @@ with tab_research:
         - Hybrid retrieval: compare sparse BM25, dense embeddings, weighted fusion, and RRF for each aviation intent.
         - Groundedness: evaluate whether each major answer claim is supported by retrieved citations.
         - UI explainability: keep score decomposition, diagnostics, and 3D evidence maps visible for review.
-        - Next upgrade: add reranking and a small labeled evaluation set with Recall@K, MRR, answer faithfulness, and citation support.
+        - Phase 2 gold benchmark: Recall@K, Precision@K, and MRR on human-labeled relevant ASRS `event_id` lists.
         """
     )
-    st.subheader("Artifact paths")
-    active_config = st.session_state.get("last_config", last_config)
-    settings, _graph = get_runtime(
-        str(active_config.get("intent_mode", "heuristic")),
-        str(active_config.get("run_mode", "Fast local")),
+    st.subheader("Phase 1 ML pipeline")
+    from aviation_rag.phase1_intent_training import load_intent_model, training_report_summary
+
+    phase1_model = load_intent_model(research_settings.phase1_model_dir)
+    if phase1_model is None:
+        st.info("Phase 1 model chưa được lưu. Chạy notebook Phase 1 hoặc set PHASE1_RETRAIN=true rồi Analyze một query.")
+    else:
+        summary = training_report_summary(phase1_model)
+        summary["model_dir"] = str(research_settings.phase1_model_dir)
+        preprocessing = summary.get("preprocessing") or {}
+        render_card_grid(
+            [
+                {"label": "Train rows", "value": summary.get("training_rows"), "note": "query-only corpus"},
+                {"label": "Corpus", "value": summary.get("training_corpus_type"), "note": "no ASRS narratives"},
+                {"label": "Val accuracy", "value": summary.get("validation_accuracy"), "note": "held-out query split"},
+                {"label": "Gold accuracy (ML)", "value": summary.get("gold_accuracy"), "note": f"{summary.get('gold_rows')} held-out gold queries"},
+                {"label": "Gold accuracy (heuristic)", "value": summary.get("heuristic_gold_accuracy"), "note": "baseline on same gold-set"},
+            ],
+            css_class="diag-grid",
+        )
+        render_card_grid(
+            [
+                {"label": "Stemming", "value": "on" if preprocessing.get("english_stemming") else "off", "note": preprocessing.get("stemmer_backend", "n/a")},
+                {"label": "Normalize", "value": "on" if preprocessing.get("normalize_text") else "off", "note": "Phase 1 text prep"},
+                {"label": "Jargon expand", "value": "on" if preprocessing.get("aviation_jargon_expansion") else "off", "note": "before stem"},
+                {"label": "Val split", "value": (phase1_model.training_report or {}).get("validation_metrics", {}).get("validation_split", "n/a"), "note": "stratified"},
+            ],
+            css_class="diag-grid",
+        )
+        with st.expander("Phase 1 preprocessing + saved pipeline", expanded=False):
+            st.json(summary)
+            pipeline_files = [
+                "preprocessing_pipeline.joblib",
+                "tfidf_vectorizer.joblib",
+                "logistic_classifier.joblib",
+                "training_report.json",
+            ]
+            st.write("Saved artifacts:")
+            for name in pipeline_files:
+                path = research_settings.phase1_model_dir / name
+                st.write(f"- `{name}`: {'found' if path.exists() else 'missing'}")
+            st.write(f"Gold labels: `{research_settings.phase1_gold_labels_path}`")
+            st.write(f"Phase 2 gold labels: `{research_settings.phase2_gold_labels_path}`")
+            st.write(f"Phase 3 gold labels: `{research_settings.phase3_gold_labels_path}`")
+
+    st.subheader("Phase 2 retrieval gold benchmark")
+    from aviation_rag.phase2_retrieval_eval import (
+        load_retrieval_gold_report,
+        run_retrieval_gold_benchmark,
+        save_retrieval_gold_report,
     )
-    st.write(f"Phase 1: `{settings.phase1_output_path}`")
-    st.write(f"Phase 2: `{settings.phase2_output_path}`")
-    st.write(f"Phase 2 index: `{settings.phase2_index_dir}`")
-    st.write(f"Phase 3: `{settings.phase3_output_path}`")
+
+    benchmark_strategies = ["bm25", "semantic", "hybrid"]
+    run_phase2_gold = st.button("Run Phase 2 gold benchmark", key="run_phase2_gold_benchmark")
+    if run_phase2_gold:
+        with st.spinner("Running retrieval on gold-set queries (may take 1–2 minutes)..."):
+            benchmark_report = run_retrieval_gold_benchmark(
+                research_settings,
+                strategies=benchmark_strategies,
+            )
+            save_retrieval_gold_report(benchmark_report, research_settings.phase2_gold_report_path)
+            st.session_state["phase2_gold_benchmark_report"] = benchmark_report
+
+    phase2_report = st.session_state.get("phase2_gold_benchmark_report") or load_retrieval_gold_report(
+        research_settings.phase2_gold_report_path
+    )
+    if phase2_report is None:
+        st.info(
+            "Chưa có báo cáo gold retrieval. Bấm **Run Phase 2 gold benchmark** hoặc chạy notebook Phase 2."
+        )
+        st.write(f"Gold labels: `{research_settings.phase2_gold_labels_path}`")
+    else:
+        summary = phase2_report.get("summary") or {}
+        render_card_grid(
+            [
+                {"label": "Gold queries", "value": phase2_report.get("gold_rows"), "note": "labeled relevant doc IDs"},
+                {"label": "Mean Recall@K", "value": summary.get("recall_at_k"), "note": "across strategies"},
+                {"label": "Mean MRR", "value": summary.get("mrr"), "note": "across strategies"},
+                {"label": "Mean Precision@K", "value": summary.get("precision_at_k"), "note": "across strategies"},
+            ],
+            css_class="diag-grid",
+        )
+        strategy_rows = []
+        for strategy, payload in (phase2_report.get("strategies") or {}).items():
+            strategy_summary = payload.get("summary") or {}
+            strategy_rows.append(
+                {
+                    "strategy": strategy,
+                    "pass_rate": payload.get("pass_rate"),
+                    "recall_at_k": strategy_summary.get("recall_at_k"),
+                    "mrr": strategy_summary.get("mrr"),
+                    "precision_at_k": strategy_summary.get("precision_at_k"),
+                    "latency_ms": strategy_summary.get("latency_ms"),
+                }
+            )
+        if strategy_rows:
+            st.dataframe(strategy_rows, width="stretch")
+        with st.expander("Gold benchmark detail", expanded=False):
+            st.json(phase2_report)
+
+    st.subheader("Phase 3 grounding gold eval")
+    from aviation_rag.io_utils import read_jsonl
+    from aviation_rag.phase3_grounding_eval import evaluate_grounding_gold
+
+    phase3_rows = (
+        read_jsonl(research_settings.phase3_output_path)
+        if research_settings.phase3_output_path.exists()
+        else []
+    )
+    if not phase3_rows:
+        st.info("Chưa có Phase 3 artifact. Chạy Analyze hoặc notebook Phase 3 để đánh giá gold-set.")
+    else:
+        grounding_gold = evaluate_grounding_gold(phase3_rows, research_settings.phase3_gold_labels_path)
+        render_card_grid(
+            [
+                {"label": "Gold rows", "value": grounding_gold.get("gold_rows"), "note": "human criteria"},
+                {"label": "Pass rate", "value": grounding_gold.get("pass_rate"), "note": "citations + risk + answer"},
+            ],
+            css_class="diag-grid",
+        )
+        with st.expander("Gold eval detail", expanded=False):
+            st.dataframe(grounding_gold.get("gold_eval_rows", []), width="stretch")
+
+    st.subheader("Artifact paths")
+    st.write(f"Phase 1 model: `{research_settings.phase1_model_dir}`")
+    st.write(f"Phase 1 output: `{research_settings.phase1_output_path}`")
+    st.write(f"Phase 2: `{research_settings.phase2_output_path}`")
+    st.write(f"Phase 2 index: `{research_settings.phase2_index_dir}`")
+    st.write(f"Phase 3: `{research_settings.phase3_output_path}`")
